@@ -3,6 +3,7 @@ package com.sergiy.dev.mockkhttp.proxy
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
+import com.sergiy.dev.mockkhttp.settings.MockkHttpSettingsState
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -176,47 +177,60 @@ class MitmproxyController(project: Project) {
 
     /**
      * Find mitmproxy executable in common locations and PATH.
+     * Searches in order:
+     * 1. Custom path from settings (if configured)
+     * 2. Common installation locations (Homebrew, pip, pipx)
+     * 3. System PATH
+     * 4. Try which command
      */
     private fun findMitmproxyExecutable(): String? {
         logger.debug("Searching for mitmproxy executable...")
 
-        // Common Homebrew locations
+        // 1. Check custom path from settings first
+        val settings = MockkHttpSettingsState.getInstance()
+        settings.customMitmproxyPath?.let { customPath ->
+            if (customPath.isNotBlank()) {
+                val file = File(customPath)
+                if (file.exists() && file.canExecute()) {
+                    logger.debug("Found mitmproxy at custom path: $customPath")
+                    return customPath
+                } else {
+                    logger.warn("⚠️ Custom mitmproxy path configured but invalid: $customPath")
+                }
+            }
+        }
+
+        // 2. Check common installation locations
+        val userHome = System.getProperty("user.home")
         val commonPaths = listOf(
-            "/opt/homebrew/bin",  // Apple Silicon Homebrew
-            "/usr/local/bin"       // Intel Homebrew
+            // Homebrew locations
+            "/opt/homebrew/bin",        // Apple Silicon Homebrew
+            "/usr/local/bin",           // Intel Homebrew
+            // pipx installations
+            "$userHome/.local/bin",
+            // pip system installations
+            "/usr/bin",
+            "/usr/local/bin"
         )
 
-        // Try common locations first
+        // Try each executable in each common location
         for (executable in MITM_EXECUTABLES) {
             for (basePath in commonPaths) {
                 val execPath = File(basePath, executable)
                 if (execPath.exists() && execPath.canExecute()) {
-                    logger.debug("Found executable: ${execPath.absolutePath}")
+                    logger.debug("Found $executable at: ${execPath.absolutePath}")
                     return execPath.absolutePath
                 }
             }
         }
 
-        // Try PATH with Homebrew paths added
-        val pathEnv = System.getenv("PATH") ?: ""
-        val enhancedPath = "/opt/homebrew/bin:/usr/local/bin:$pathEnv"
-        val paths = enhancedPath.split(File.pathSeparator)
-
-        for (executable in MITM_EXECUTABLES) {
-            for (pathDir in paths) {
-                val execPath = File(pathDir, executable)
-                if (execPath.exists() && execPath.canExecute()) {
-                    logger.debug("Found executable: ${execPath.absolutePath}")
-                    return execPath.absolutePath
-                }
-            }
-        }
-
-        // Last resort: try 'which' command with enhanced PATH
+        // 3. Try using 'which' command (respects PATH)
         for (executable in MITM_EXECUTABLES) {
             try {
                 val env = mutableMapOf<String, String>()
-                env["PATH"] = enhancedPath
+                // Enhance PATH with common locations
+                val currentPath = System.getenv("PATH") ?: ""
+                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:$userHome/.local/bin:$currentPath"
 
                 val process = ProcessBuilder("which", executable)
                     .apply { environment().putAll(env) }
@@ -224,16 +238,16 @@ class MitmproxyController(project: Project) {
 
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
                 val path = reader.readLine()?.trim()
-                if (!path.isNullOrEmpty() && File(path).exists()) {
-                    logger.debug("Found via 'which': $path")
+                if (!path.isNullOrEmpty() && File(path).exists() && File(path).canExecute()) {
+                    logger.debug("Found $executable via 'which': $path")
                     return path
                 }
-            } catch (_: Exception) {
-                // Ignore and continue
+            } catch (e: Exception) {
+                logger.debug("Failed to find $executable via 'which': ${e.message}")
             }
         }
 
-        logger.warn("Mitmproxy executable not found")
+        logger.warn("❌ Mitmproxy executable not found. Please install it or configure custom path in Settings → Tools → MockkHttp")
         return null
     }
 
@@ -244,7 +258,7 @@ class MitmproxyController(project: Project) {
         executablePath: String,
         config: MitmproxyConfig
     ): List<String> {
-        return listOf(
+        val command = mutableListOf(
             executablePath,
             "-s", config.addonScriptPath,
             "--set", "intercept_mode=${config.mode.name.lowercase()}",
@@ -254,6 +268,18 @@ class MitmproxyController(project: Project) {
             "--listen-port", config.proxyPort.toString(),
             "--ssl-insecure" // Allow insecure SSL connections
         )
+
+        // Add confdir from settings if configured
+        val settings = MockkHttpSettingsState.getInstance()
+        val confdir = settings.customCertificatesPath?.takeIf { it.isNotBlank() }
+            ?: (System.getProperty("user.home") + "/.mitmproxy")
+
+        command.add("--set")
+        command.add("confdir=$confdir")
+
+        logger.debug("Using confdir: $confdir")
+
+        return command
     }
 
     /**

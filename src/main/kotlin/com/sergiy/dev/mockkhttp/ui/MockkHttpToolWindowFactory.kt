@@ -1,5 +1,6 @@
 package com.sergiy.dev.mockkhttp.ui
 
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -9,8 +10,12 @@ import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 /**
  * Factory for creating the MockkHttp Tool Window.
  * Registered in plugin.xml.
+ *
+ * Implements DumbAware to make the tool window available during project indexing.
+ * This allows users to access MockkHttp functionality immediately after opening a project,
+ * without waiting for the indexing process to complete.
  */
-class MockkHttpToolWindowFactory : ToolWindowFactory {
+class MockkHttpToolWindowFactory : ToolWindowFactory, DumbAware {
     
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val logger = MockkHttpLogger.getInstance(project)

@@ -51,6 +51,16 @@ class MockkHttpToolWindow(project: Project) : JPanel(BorderLayout()) {
             throw e
         }
 
+        // Add Config tab
+        try {
+            val configPanel = ConfigPanel(project)
+            tabbedPane.addTab("Config", configPanel)
+            logger.debug("Config panel added successfully")
+        } catch (e: Exception) {
+            logger.error("Failed to create Config panel", e)
+            throw e
+        }
+
         add(tabbedPane, BorderLayout.CENTER)
 
         logger.info("MockkHttpToolWindow initialized successfully")

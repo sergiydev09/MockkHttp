@@ -3,6 +3,7 @@ package com.sergiy.dev.mockkhttp.cert
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
+import com.sergiy.dev.mockkhttp.settings.MockkHttpSettingsState
 import java.io.File
 
 /**
@@ -41,20 +42,48 @@ class CertificateManager(project: Project) {
 
     /**
      * Get the path to mitmproxy executable.
-     * Searches common Homebrew locations and PATH.
+     * Searches in order:
+     * 1. Custom path from settings (if configured)
+     * 2. Common installation locations (Homebrew, pip, pipx)
+     * 3. System PATH
+     * 4. Try which/where command
      */
     fun getMitmproxyPath(): String? {
         logger.debug("Getting mitmproxy path...")
 
-        // Common Homebrew locations for mitmproxy
+        // 1. Check custom path from settings first
+        val settings = MockkHttpSettingsState.getInstance()
+        settings.customMitmproxyPath?.let { customPath ->
+            if (customPath.isNotBlank()) {
+                val file = File(customPath)
+                if (file.exists() && file.canExecute()) {
+                    logger.debug("Found mitmproxy at custom path: $customPath")
+                    return customPath
+                } else {
+                    logger.warn("⚠️ Custom mitmproxy path configured but invalid: $customPath")
+                }
+            }
+        }
+
+        // 2. Check common installation locations
+        val userHome = System.getProperty("user.home")
         val commonPaths = listOf(
-            "/opt/homebrew/bin/mitmproxy",  // Apple Silicon Homebrew
-            "/usr/local/bin/mitmproxy",      // Intel Homebrew
+            // Homebrew locations
+            "/opt/homebrew/bin/mitmproxy",      // Apple Silicon Homebrew
             "/opt/homebrew/bin/mitmdump",
+            "/usr/local/bin/mitmproxy",         // Intel Homebrew
+            "/usr/local/bin/mitmdump",
+            // pipx installations
+            "$userHome/.local/bin/mitmproxy",
+            "$userHome/.local/bin/mitmdump",
+            // pip system installations
+            "/usr/bin/mitmproxy",
+            "/usr/bin/mitmdump",
+            "/usr/local/bin/mitmproxy",
             "/usr/local/bin/mitmdump"
         )
 
-        // Check common paths first
+        // Check common paths
         for (path in commonPaths) {
             val file = File(path)
             if (file.exists() && file.canExecute()) {
@@ -63,99 +92,161 @@ class CertificateManager(project: Project) {
             }
         }
 
-        // Try using 'which' with full PATH
-        try {
-            val env = System.getenv().toMutableMap()
-            // Add common Homebrew paths to PATH
-            val currentPath = env["PATH"] ?: ""
-            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:$currentPath"
+        // 3. Try using 'which' command (respects PATH)
+        for (executable in listOf("mitmproxy", "mitmdump")) {
+            try {
+                val env = System.getenv().toMutableMap()
+                // Enhance PATH with common locations
+                val currentPath = env["PATH"] ?: ""
+                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:$userHome/.local/bin:$currentPath"
 
-            val process = ProcessBuilder("which", "mitmproxy")
-                .redirectErrorStream(true)
-                .apply { environment().putAll(env) }
-                .start()
+                val process = ProcessBuilder("which", executable)
+                    .redirectErrorStream(true)
+                    .apply { environment().putAll(env) }
+                    .start()
 
-            val exitCode = process.waitFor()
-            if (exitCode == 0) {
-                val path = process.inputStream.bufferedReader().readText().trim()
-                if (path.isNotEmpty()) {
-                    logger.debug("Found mitmproxy via which: $path")
-                    return path
+                val exitCode = process.waitFor()
+                if (exitCode == 0) {
+                    val path = process.inputStream.bufferedReader().readText().trim()
+                    if (path.isNotEmpty() && File(path).exists()) {
+                        logger.debug("Found $executable via which: $path")
+                        return path
+                    }
                 }
+            } catch (e: Exception) {
+                logger.debug("Failed to find $executable via which: ${e.message}")
             }
-        } catch (e: Exception) {
-            logger.debug("Failed to find mitmproxy via which: ${e.message}")
         }
 
-        logger.warn("mitmproxy not found in common locations or PATH")
+        logger.warn("❌ mitmproxy not found. Please install it or configure custom path in Settings → Tools → MockkHttp")
         return null
     }
     
     /**
-     * Generate mitmproxy certificate if it doesn't exist.
-     * This will run mitmproxy briefly to generate the certificates.
+     * Verify mitmproxy certificate exists.
+     * If it doesn't exist, mitmproxy will generate it automatically on first run.
+     * We don't need to pre-generate certificates - mitmproxy handles this internally.
      */
     fun generateCertificateIfNeeded(): Boolean {
         logger.info("🔐 Checking mitmproxy certificate...")
-        
+
+        // Ensure config directory exists
+        val configDir = getMitmproxyConfigDir()
+        if (configDir != null && !configDir.exists()) {
+            logger.info("📁 Creating mitmproxy config directory: ${configDir.absolutePath}")
+            try {
+                if (!configDir.mkdirs()) {
+                    logger.error("❌ Failed to create config directory")
+                    return false
+                }
+                logger.info("✅ Config directory created successfully")
+            } catch (e: Exception) {
+                logger.error("❌ Failed to create config directory", e)
+                return false
+            }
+        }
+
         val certFile = getCertificateFile()
+
         if (certFile != null && certFile.exists()) {
             logger.info("✅ Certificate already exists at: ${certFile.absolutePath}")
             return true
         }
-        
-        logger.info("📝 Generating new mitmproxy certificate...")
-        
-        try {
-            // Run mitmdump briefly to generate certificates
-            val process = ProcessBuilder("mitmdump", "--version")
-                .redirectErrorStream(true)
-                .start()
-            
-            val exitCode = process.waitFor()
-            val output = process.inputStream.bufferedReader().readText()
-            
-            if (exitCode != 0) {
-                logger.error("Failed to run mitmdump: $output")
-                return false
-            }
-            
-            logger.debug("mitmdump output: $output")
-            
-            // Wait a bit for certificate generation
-            Thread.sleep(1000)
-            
-            // Check if certificate was created
-            val newCertFile = getCertificateFile()
-            if (newCertFile != null && newCertFile.exists()) {
-                logger.info("✅ Certificate generated successfully at: ${newCertFile.absolutePath}")
-                return true
-            }
-            
-            logger.error("❌ Certificate file not created")
-            return false
-            
-        } catch (e: Exception) {
-            logger.error("Failed to generate certificate", e)
-            return false
-        }
+
+        // Certificate doesn't exist yet - this is normal on first run
+        logger.info("ℹ️ Certificate not found at: ${certFile?.absolutePath}")
+        logger.info("ℹ️ Mitmproxy will generate it automatically on first proxy startup")
+        logger.info("ℹ️ Config directory: ${configDir?.absolutePath ?: "~/.mitmproxy"}")
+
+        // Return true because the absence of certificates is not an error
+        // Mitmproxy will create them automatically when it starts
+        return true
     }
     
     /**
-     * Get the mitmproxy certificate file.
+     * Get the mitmproxy configuration directory.
+     * Checks in order:
+     * 1. MITMPROXY_CONFDIR environment variable
+     * 2. Custom path from settings
+     * 3. Default ~/.mitmproxy
      */
-    fun getCertificateFile(): File? {
+    private fun getMitmproxyConfigDir(): File? {
+        // 1. Check environment variable
+        val envConfigDir = System.getenv("MITMPROXY_CONFDIR")
+        if (!envConfigDir.isNullOrBlank()) {
+            val dir = File(envConfigDir)
+            if (validateDirectory(dir)) {
+                logger.debug("Using MITMPROXY_CONFDIR: ${dir.absolutePath}")
+                return dir
+            } else {
+                logger.warn("⚠️ MITMPROXY_CONFDIR set but invalid: $envConfigDir")
+            }
+        }
+
+        // 2. Check custom path from settings
+        val settings = MockkHttpSettingsState.getInstance()
+        settings.customCertificatesPath?.let { customPath ->
+            if (customPath.isNotBlank()) {
+                val dir = File(customPath)
+                if (validateDirectory(dir)) {
+                    logger.debug("Using custom certificates path: ${dir.absolutePath}")
+                    return dir
+                } else {
+                    logger.warn("⚠️ Custom certificates path configured but invalid: $customPath")
+                }
+            }
+        }
+
+        // 3. Default location
         val homeDir = System.getProperty("user.home")
-        val mitmproxyDir = File(homeDir, MITMPROXY_DIR)
-        
-        if (!mitmproxyDir.exists()) {
-            logger.debug("mitmproxy directory does not exist: ${mitmproxyDir.absolutePath}")
+        if (homeDir.isNullOrBlank()) {
+            logger.error("❌ Cannot determine user home directory")
             return null
         }
-        
+
+        val defaultDir = File(homeDir, MITMPROXY_DIR)
+        logger.debug("Using default mitmproxy directory: ${defaultDir.absolutePath}")
+        return defaultDir
+    }
+
+    /**
+     * Validate that a directory exists, is readable and writable.
+     */
+    private fun validateDirectory(dir: File): Boolean {
+        return dir.exists() && dir.isDirectory && dir.canRead() && dir.canWrite()
+    }
+
+    /**
+     * Get the mitmproxy certificate file.
+     * If the directory doesn't exist, attempts to create it.
+     */
+    fun getCertificateFile(): File? {
+        val mitmproxyDir = getMitmproxyConfigDir() ?: return null
+
+        // Create directory if it doesn't exist
+        if (!mitmproxyDir.exists()) {
+            logger.debug("mitmproxy directory does not exist, will be created: ${mitmproxyDir.absolutePath}")
+            try {
+                if (!mitmproxyDir.mkdirs()) {
+                    logger.error("❌ Failed to create mitmproxy directory: ${mitmproxyDir.absolutePath}")
+                    return null
+                }
+                logger.info("✅ Created mitmproxy directory: ${mitmproxyDir.absolutePath}")
+            } catch (e: Exception) {
+                logger.error("❌ Failed to create mitmproxy directory", e)
+                return null
+            }
+        }
+
+        // Validate directory permissions
+        if (!validateDirectory(mitmproxyDir)) {
+            logger.error("❌ mitmproxy directory exists but has invalid permissions: ${mitmproxyDir.absolutePath}")
+            return null
+        }
+
         val certFile = File(mitmproxyDir, CERT_FILE)
         logger.debug("Certificate file path: ${certFile.absolutePath}, exists: ${certFile.exists()}")
-        
+
         return certFile
     }
     

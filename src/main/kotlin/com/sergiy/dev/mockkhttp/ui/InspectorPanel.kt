@@ -1,6 +1,7 @@
 package com.sergiy.dev.mockkhttp.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
@@ -22,8 +23,6 @@ import com.sergiy.dev.mockkhttp.store.FlowStore
 import com.sergiy.dev.mockkhttp.store.MockkRulesStore
 import java.awt.BorderLayout
 import java.awt.Dimension
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
 import java.io.File
 import javax.swing.*
 
@@ -46,7 +45,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val emulatorComboBox: ComboBox<EmulatorInfo>
     private val appComboBox: ComboBox<AppInfo>
     private val refreshAppsButton: JButton
-    private val installCertButton: JButton
     private val recordingButton: JToggleButton
     private val debugButton: JToggleButton
     private val mockkButton: JToggleButton
@@ -111,86 +109,59 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             addActionListener { refreshApps() }
         }
 
-        // Create compact vertical buttons (Android Studio style - flat, no border)
-        installCertButton = JButton(AllIcons.Actions.Install).apply {
-            toolTipText = "Install Certificate"
-            isEnabled = false
-            isBorderPainted = false
-            isFocusPainted = false
-            isContentAreaFilled = false
-            addActionListener { installCertificate() }
-        }
-
-        recordingButton = JToggleButton(AllIcons.Debugger.Db_set_breakpoint).apply {
+        // Create mode buttons (horizontal layout with icons and text)
+        recordingButton = JToggleButton("Recording", AllIcons.Debugger.Db_set_breakpoint).apply {
             toolTipText = "Start/Stop Recording Mode"
             isEnabled = false
-            isBorderPainted = false
-            isFocusPainted = false
-            isContentAreaFilled = false
             addActionListener { toggleRecording() }
             addItemListener { _ ->
-                // Visual feedback when selected using background color only
-                isContentAreaFilled = isSelected
-                isBorderPainted = false  // Always keep border off
-                background = if (isSelected) {
-                    JBColor.namedColor("ActionButton.pressedBackground", JBColor(0x5394EC, 0x5C6164))
+                if (isSelected) {
+                    text = "Stop Recording"
+                    icon = AllIcons.Actions.Suspend
                 } else {
-                    null
+                    text = "Recording"
+                    icon = AllIcons.Debugger.Db_set_breakpoint
                 }
             }
         }
 
-        debugButton = JToggleButton(AllIcons.Actions.StartDebugger).apply {
+        debugButton = JToggleButton("Debug", AllIcons.Actions.StartDebugger).apply {
             toolTipText = "Start/Stop Debug Mode"
             isEnabled = false
-            isBorderPainted = false
-            isFocusPainted = false
-            isContentAreaFilled = false
             addActionListener { toggleDebug() }
             addItemListener { _ ->
-                // Visual feedback when selected using background color only
-                isContentAreaFilled = isSelected
-                isBorderPainted = false  // Always keep border off
-                background = if (isSelected) {
-                    JBColor.namedColor("ActionButton.pressedBackground", JBColor(0x5394EC, 0x5C6164))
+                if (isSelected) {
+                    text = "Stop Debug"
+                    icon = AllIcons.Actions.Suspend
                 } else {
-                    null
+                    text = "Debug"
+                    icon = AllIcons.Actions.StartDebugger
                 }
             }
         }
 
-        mockkButton = JToggleButton(AllIcons.Nodes.DataSchema).apply {
+        mockkButton = JToggleButton("Mockk", AllIcons.Nodes.DataSchema).apply {
             toolTipText = "Start/Stop Mockk Mode (Auto-apply mock rules)"
             isEnabled = false
-            isBorderPainted = false
-            isFocusPainted = false
-            isContentAreaFilled = false
             addActionListener { toggleMockk() }
             addItemListener { _ ->
-                // Visual feedback when selected using background color only
-                isContentAreaFilled = isSelected
-                isBorderPainted = false  // Always keep border off
-                background = if (isSelected) {
-                    JBColor.namedColor("ActionButton.pressedBackground", JBColor(0x5394EC, 0x5C6164))
+                if (isSelected) {
+                    text = "Stop Mockk"
+                    icon = AllIcons.Actions.Suspend
                 } else {
-                    null
+                    text = "Mockk"
+                    icon = AllIcons.Nodes.DataSchema
                 }
             }
         }
 
-        clearButton = JButton(AllIcons.Actions.GC).apply {
+        clearButton = JButton("Clear", AllIcons.Actions.GC).apply {
             toolTipText = "Clear All Flows"
-            isBorderPainted = false
-            isFocusPainted = false
-            isContentAreaFilled = false
             addActionListener { clearFlows() }
         }
 
-        exportButton = JButton(AllIcons.ToolbarDecorator.Export).apply {
+        exportButton = JButton("Export", AllIcons.ToolbarDecorator.Export).apply {
             toolTipText = "Export Flows"
-            isBorderPainted = false
-            isFocusPainted = false
-            isContentAreaFilled = false
             addActionListener { exportFlows() }
         }
 
@@ -256,10 +227,23 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun setupLayout() {
         border = JBUI.Borders.empty(5)
 
-        // Top panel: Horizontal selectors
+        // Top panel: Mode buttons + Emulator/App selectors
         val topPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(5, 5, 0, 5)
 
+            // Left side: Mode buttons
+            val modeButtonsPanel = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+
+                add(recordingButton)
+                add(Box.createHorizontalStrut(2))
+                add(debugButton)
+                add(Box.createHorizontalStrut(2))
+                add(mockkButton)
+                add(Box.createHorizontalStrut(15))
+            }
+
+            // Right side: Emulator and App selectors
             val selectorsPanel = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
 
@@ -281,63 +265,42 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 add(Box.createHorizontalGlue())
             }
 
-            add(selectorsPanel, BorderLayout.CENTER)
-        }
-
-        // Left panel: Compact vertical buttons (fixed width, non-resizable like logcat)
-        val buttonsPanel = JPanel(GridBagLayout()).apply {
-            border = JBUI.Borders.empty(2)
-            preferredSize = Dimension(40, 0)
-            minimumSize = Dimension(40, 0)
-            maximumSize = Dimension(40, Int.MAX_VALUE)
-
-            val gbc = GridBagConstraints().apply {
-                gridx = 0
-                gridy = GridBagConstraints.RELATIVE
-                fill = GridBagConstraints.HORIZONTAL
-                weightx = 1.0
-                insets = JBUI.insets(2)
+            // Combine mode buttons and selectors
+            val combinedPanel = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                add(modeButtonsPanel)
+                add(selectorsPanel)
             }
 
-            add(installCertButton, gbc)
-            add(recordingButton, gbc)
-            add(debugButton, gbc)
-            add(mockkButton, gbc)
-
-            // Separator
-            gbc.insets = JBUI.insets(10, 2, 5, 2)
-            add(JSeparator(), gbc)
-            gbc.insets = JBUI.insets(2)
-
-            add(clearButton, gbc)
-            add(exportButton, gbc)
-
-            // Spacer
-            gbc.weighty = 1.0
-            add(Box.createVerticalGlue(), gbc)
+            add(combinedPanel, BorderLayout.CENTER)
         }
 
-        // Right panel: Flow list
+        // Center panel: Flow list (full width now, no left buttons panel)
         val flowPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(5)
             add(JBScrollPane(flowList), BorderLayout.CENTER)
         }
 
-        // Center panel with buttons and flows (no split pane, fixed layout)
-        val centerPanel = JPanel(BorderLayout()).apply {
-            add(buttonsPanel, BorderLayout.WEST)
-            add(flowPanel, BorderLayout.CENTER)
-        }
-
-        // Bottom panel: Status label
+        // Bottom panel: Clear/Export buttons + Status label
         val bottomPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(5, 10)
-            add(statusLabel, BorderLayout.WEST)
+
+            // Left side: Clear and Export buttons
+            val actionsPanel = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                add(clearButton)
+                add(Box.createHorizontalStrut(5))
+                add(exportButton)
+                add(Box.createHorizontalStrut(15))
+            }
+
+            add(actionsPanel, BorderLayout.WEST)
+            add(statusLabel, BorderLayout.CENTER)
         }
 
         // Main layout
         add(topPanel, BorderLayout.NORTH)
-        add(centerPanel, BorderLayout.CENTER)
+        add(flowPanel, BorderLayout.CENTER)
         add(bottomPanel, BorderLayout.SOUTH)
     }
 
@@ -384,6 +347,17 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             // Only auto-select first if nothing was selected before
             emulatorComboBox.selectedIndex = 0
             logger.debug("Auto-selected first emulator")
+        } else if (previousSelection != null && emulators.none { it.serialNumber == previousSelection.serialNumber }) {
+            // Previously selected emulator is now disconnected
+            logger.warn("⚠️ Previously selected emulator disconnected")
+            selectedEmulator = null
+            selectedApp = null
+
+            // Stop proxy if running
+            if (currentMode != Mode.STOPPED) {
+                logger.warn("⚠️ Stopping proxy due to emulator disconnection")
+                stopProxy()
+            }
         }
     }
 
@@ -418,79 +392,59 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun updateButtonStates() {
         val hasSelection = selectedEmulator != null && selectedApp != null
         refreshAppsButton.isEnabled = selectedEmulator != null
-        installCertButton.isEnabled = selectedEmulator != null && currentMode == Mode.STOPPED
         recordingButton.isEnabled = hasSelection
         debugButton.isEnabled = hasSelection
         mockkButton.isEnabled = hasSelection
     }
 
-    private fun installCertificate() {
-        val emulator = selectedEmulator ?: return
-
-        object : Task.Backgroundable(project, "Installing certificate", false) {
-            var result: CertificateManager.CertInstallResult? = null
-
-            override fun run(indicator: ProgressIndicator) {
-                result = certificateManager.installUserCertificate(emulator.serialNumber)
-            }
-
-            override fun onSuccess() {
-                when (result) {
-                    CertificateManager.CertInstallResult.INSTALLED_AUTOMATICALLY -> {
-                        JOptionPane.showMessageDialog(
-                            this@InspectorPanel,
-                            "Certificate installed successfully!",
-                            "Success",
-                            JOptionPane.INFORMATION_MESSAGE
-                        )
-                    }
-                    CertificateManager.CertInstallResult.REQUIRES_MANUAL_INSTALL -> {
-                        JOptionPane.showMessageDialog(
-                            this@InspectorPanel,
-                            "Certificate copied to Downloads.\nPlease install manually:\n" +
-                                    "Settings → Security → Install Certificate",
-                            "Manual Installation Required",
-                            JOptionPane.WARNING_MESSAGE
-                        )
-                    }
-                    CertificateManager.CertInstallResult.FAILED -> {
-                        JOptionPane.showMessageDialog(
-                            this@InspectorPanel,
-                            "Failed to install certificate",
-                            "Error",
-                            JOptionPane.ERROR_MESSAGE
-                        )
-                    }
-                    null -> {}
-                }
-            }
-        }.queue()
-    }
-
     private fun toggleRecording() {
-        when (currentMode) {
-            Mode.STOPPED -> startProxy(Mode.RECORDING)
-            Mode.RECORDING -> stopProxy()
-            Mode.DEBUG -> switchToRecording()
-            Mode.MOCKK -> switchToRecording()
+        if (recordingButton.isSelected) {
+            // User clicked to activate Recording
+            when (currentMode) {
+                Mode.STOPPED -> startProxy(Mode.RECORDING)
+                Mode.RECORDING -> {} // Already in recording, do nothing
+                Mode.DEBUG -> switchToRecording()
+                Mode.MOCKK -> switchToRecording()
+            }
+        } else {
+            // User clicked to deactivate Recording
+            if (currentMode == Mode.RECORDING) {
+                stopProxy()
+            }
         }
     }
 
     private fun toggleDebug() {
-        when (currentMode) {
-            Mode.STOPPED -> startProxy(Mode.DEBUG)
-            Mode.DEBUG -> stopProxy()
-            Mode.RECORDING -> switchToDebug()
-            Mode.MOCKK -> switchToDebug()
+        if (debugButton.isSelected) {
+            // User clicked to activate Debug
+            when (currentMode) {
+                Mode.STOPPED -> startProxy(Mode.DEBUG)
+                Mode.DEBUG -> {} // Already in debug, do nothing
+                Mode.RECORDING -> switchToDebug()
+                Mode.MOCKK -> switchToDebug()
+            }
+        } else {
+            // User clicked to deactivate Debug
+            if (currentMode == Mode.DEBUG) {
+                stopProxy()
+            }
         }
     }
 
     private fun toggleMockk() {
-        when (currentMode) {
-            Mode.STOPPED -> startProxy(Mode.MOCKK)
-            Mode.MOCKK -> stopProxy()
-            Mode.RECORDING -> switchToMockk()
-            Mode.DEBUG -> switchToMockk()
+        if (mockkButton.isSelected) {
+            // User clicked to activate Mockk
+            when (currentMode) {
+                Mode.STOPPED -> startProxy(Mode.MOCKK)
+                Mode.MOCKK -> {} // Already in mockk, do nothing
+                Mode.RECORDING -> switchToMockk()
+                Mode.DEBUG -> switchToMockk()
+            }
+        } else {
+            // User clicked to deactivate Mockk
+            if (currentMode == Mode.MOCKK) {
+                stopProxy()
+            }
         }
     }
 
@@ -504,19 +458,14 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     // Check mitmproxy
                     if (!certificateManager.isMitmproxyInstalled()) {
                         SwingUtilities.invokeLater {
-                            JOptionPane.showMessageDialog(
-                                this@InspectorPanel,
-                                "mitmproxy is not installed.\nPlease install: brew install mitmproxy",
-                                "Error",
-                                JOptionPane.ERROR_MESSAGE
-                            )
+                            showMitmproxyNotFoundDialog()
                         }
                         return
                     }
 
-                    // Generate certificate
+                    // Generate certificate (mitmproxy will create it if needed)
                     if (!certificateManager.generateCertificateIfNeeded()) {
-                        throw Exception("Failed to generate certificate")
+                        throw Exception("Failed to prepare certificate directory")
                     }
 
                     // Start plugin HTTP server
@@ -544,6 +493,31 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                     if (!mitmproxyController.start(config)) {
                         throw Exception("Failed to start mitmproxy")
+                    }
+
+                    // Install certificate on device (mitmproxy has generated it by now)
+                    indicator.text = "Installing certificate..."
+                    logger.info("Installing certificate on device...")
+                    val certResult = certificateManager.installUserCertificate(emulator.serialNumber)
+                    when (certResult) {
+                        CertificateManager.CertInstallResult.INSTALLED_AUTOMATICALLY -> {
+                            logger.info("✅ Certificate installed successfully")
+                        }
+                        CertificateManager.CertInstallResult.REQUIRES_MANUAL_INSTALL -> {
+                            logger.warn("⚠️ Certificate requires manual installation")
+                            SwingUtilities.invokeLater {
+                                JOptionPane.showMessageDialog(
+                                    this@InspectorPanel,
+                                    "Certificate copied to Downloads.\nPlease install manually:\n" +
+                                            "Settings → Security → Install Certificate",
+                                    "Manual Installation Required",
+                                    JOptionPane.WARNING_MESSAGE
+                                )
+                            }
+                        }
+                        CertificateManager.CertInstallResult.FAILED -> {
+                            throw Exception("Failed to install certificate on device")
+                        }
                     }
 
                     // Configure iptables firewall for app-only filtering
@@ -598,6 +572,14 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     pluginHttpServer.stop()
 
                     SwingUtilities.invokeLater {
+                        // Deactivate all mode buttons on error
+                        currentMode = Mode.STOPPED
+                        recordingButton.isSelected = false
+                        debugButton.isSelected = false
+                        mockkButton.isSelected = false
+                        updateStatus("Error: ${e.message}", JBColor.RED)
+                        updateButtonStates()
+
                         JOptionPane.showMessageDialog(
                             this@InspectorPanel,
                             "Failed to start: ${e.message}",
@@ -923,6 +905,55 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         SwingUtilities.invokeLater {
             statusLabel.text = message
             statusLabel.foreground = color
+        }
+    }
+
+    /**
+     * Show a detailed dialog when mitmproxy is not found, with installation instructions
+     * and option to configure manually.
+     */
+    private fun showMitmproxyNotFoundDialog() {
+        val message = """
+            MockkHttp could not find mitmproxy on your system.
+
+            To install mitmproxy, use one of these methods:
+
+            • Homebrew (recommended for macOS):
+              brew install mitmproxy
+
+            • pipx (Python):
+              pipx install mitmproxy
+
+            • pip (Python):
+              pip install mitmproxy
+
+            After installation, restart the IDE or click "Configure Manually"
+            to specify the mitmproxy executable path.
+
+            Common installation locations:
+            • /opt/homebrew/bin/mitmproxy (Apple Silicon)
+            • /usr/local/bin/mitmproxy (Intel Mac)
+            • ~/.local/bin/mitmproxy (pipx)
+        """.trimIndent()
+
+        val options = arrayOf("Configure Manually", "OK")
+        val result = JOptionPane.showOptionDialog(
+            this,
+            message,
+            "Mitmproxy Not Found",
+            JOptionPane.DEFAULT_OPTION,
+            JOptionPane.WARNING_MESSAGE,
+            null,
+            options,
+            options[1]
+        )
+
+        if (result == 0) {
+            // Open settings dialog
+            ShowSettingsUtil.getInstance().showSettingsDialog(
+                project,
+                "MockkHttp"
+            )
         }
     }
 
