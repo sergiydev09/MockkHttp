@@ -1,0 +1,38 @@
+<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle with gradient -->
+  <circle cx="20" cy="20" r="18" fill="url(#bgGradient)"/>
+
+  <!-- Network icon - stylized HTTP interceptor -->
+  <g transform="translate(8, 8)">
+    <!-- Left device -->
+    <rect x="0" y="6" width="6" height="9" rx="1" fill="#FFFFFF" opacity="0.9"/>
+    <rect x="1" y="7" width="4" height="1" fill="#4CAF50"/>
+
+    <!-- Right device -->
+    <rect x="18" y="6" width="6" height="9" rx="1" fill="#FFFFFF" opacity="0.9"/>
+    <rect x="19" y="7" width="4" height="1" fill="#4CAF50"/>
+
+    <!-- Center proxy/interceptor -->
+    <circle cx="12" cy="10.5" r="4" fill="#FF6B35" opacity="0.95"/>
+    <path d="M10.5 10.5 L11.5 11.5 L13.5 9.5" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+    <!-- Connection lines -->
+    <line x1="6" y1="10.5" x2="8" y2="10.5" stroke="#FFFFFF" stroke-width="2" opacity="0.8"/>
+    <line x1="16" y1="10.5" x2="18" y2="10.5" stroke="#FFFFFF" stroke-width="2" opacity="0.8"/>
+
+    <!-- Bidirectional arrows -->
+    <path d="M7 10.5 L8 10" stroke="#4CAF50" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M7 10.5 L8 11" stroke="#4CAF50" stroke-width="1.5" stroke-linecap="round"/>
+
+    <path d="M17 10.5 L16 11" stroke="#FF6B35" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M17 10.5 L16 10" stroke="#FF6B35" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Gradient definition -->
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2C3E50;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#34495E;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+</svg>

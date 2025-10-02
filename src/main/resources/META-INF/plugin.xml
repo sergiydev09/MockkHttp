@@ -1,0 +1,75 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>com.sergiy.dev.MockkHttp</id>
+
+    <!-- Public plugin name should be written in Title Case.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
+    <name>MockkHttp</name>
+
+    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
+    <vendor email="sergiy.alonso@gmail.com" url="https://github.com/sergiydev09/MockkHttp">Sergiy</vendor>
+
+    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
+    <description><![CDATA[
+        <h2>Network Traffic Interceptor for Android Development</h2>
+        <p>
+            Intercept and modify HTTP/HTTPS traffic from Android applications running in emulators.
+            Perfect for testing, debugging, and developing Android apps without modifying your code.
+        </p>
+
+        <h3>Key Features:</h3>
+        <ul>
+            <li><strong>Three Operation Modes:</strong>
+                <ul>
+                    <li>Recording Mode: Capture all network traffic passively</li>
+                    <li>Debug Mode: Pause requests and edit responses in real-time</li>
+                    <li>Mockk Mode: Apply mock responses automatically using rules</li>
+                </ul>
+            </li>
+            <li><strong>Full HTTPS Support:</strong> Automatic certificate installation using mitmproxy (no app code changes required)</li>
+            <li><strong>App-Level Filtering:</strong> Uses iptables to intercept traffic only from the selected application</li>
+            <li><strong>Mock Rule Management:</strong> Create, save, and reuse mock responses for API testing</li>
+            <li><strong>Export/Import Flows:</strong> Save captured traffic as JSON for documentation or sharing</li>
+            <li><strong>Apple Silicon Optimized:</strong> Native support for M1/M2/M3 Macs with ARM64 emulators</li>
+        </ul>
+
+        <h3>Requirements:</h3>
+        <ul>
+            <li>macOS (Apple Silicon or Intel)</li>
+            <li>mitmproxy installed via Homebrew</li>
+            <li>Android emulator, can have Google Api but not Playstore</li>
+            <li>App must trust user certificates (network_security_config.xml)</li>
+        </ul>
+
+        <h3>Use Cases:</h3>
+        <ul>
+            <li>Test error handling by simulating server errors (500, 404, etc.)</li>
+            <li>Bypass authentication for UI testing</li>
+            <li>Test offline scenarios and edge cases</li>
+            <li>Validate API responses without backend access</li>
+            <li>Debug network-related issues in production apps</li>
+        </ul>
+
+        <p>
+            <strong>Note:</strong> This tool is designed for development and testing purposes only.
+            It requires mitmproxy to be installed on your system.
+        </p>
+    ]]></description>
+
+    <!-- Product and plugin compatibility requirements.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <!-- Extension points defined by the plugin.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool Window Registration -->
+        <toolWindow
+                id="MockkHttp"
+                anchor="bottom"
+                icon="/META-INF/pluginIcon.svg"
+                factoryClass="com.sergiy.dev.mockkhttp.ui.MockkHttpToolWindowFactory"/>
+    </extensions>
+</idea-plugin>
