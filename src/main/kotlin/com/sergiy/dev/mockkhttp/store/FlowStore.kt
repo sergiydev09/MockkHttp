@@ -144,6 +144,14 @@ class FlowStore(project: Project) {
     }
 
     /**
+     * Register listener for when a flow is updated.
+     */
+    fun addFlowUpdatedListener(listener: (HttpFlowData) -> Unit) {
+        flowUpdatedListeners.add(listener)
+        logger.debug("Flow updated listener registered (total: ${flowUpdatedListeners.size})")
+    }
+
+    /**
      * Register listener for when flows are cleared.
      */
     fun addFlowsClearedListener(listener: () -> Unit) {

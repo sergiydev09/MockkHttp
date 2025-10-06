@@ -15,46 +15,46 @@
     <description><![CDATA[
         <h2>Network Traffic Interceptor for Android Development</h2>
         <p>
-            Intercept and modify HTTP/HTTPS traffic from Android applications running in emulators.
-            Perfect for testing, debugging, and developing Android apps without modifying your code.
+            Capture and inspect HTTP/HTTPS traffic from your Android applications using OkHttp interceptors.
+            Perfect for debugging, testing, and understanding your app's network behavior.
         </p>
 
         <h3>Key Features:</h3>
         <ul>
-            <li><strong>Three Operation Modes:</strong>
-                <ul>
-                    <li>Recording Mode: Capture all network traffic passively</li>
-                    <li>Debug Mode: Pause requests and edit responses in real-time</li>
-                    <li>Mockk Mode: Apply mock responses automatically using rules</li>
-                </ul>
-            </li>
-            <li><strong>Full HTTPS Support:</strong> Automatic certificate installation using mitmproxy (no app code changes required)</li>
-            <li><strong>App-Level Filtering:</strong> Uses iptables to intercept traffic only from the selected application</li>
-            <li><strong>Mock Rule Management:</strong> Create, save, and reuse mock responses for API testing</li>
+            <li><strong>Zero-Config Interception:</strong> Automatically injects interceptor via Gradle plugin - no code changes needed</li>
+            <li><strong>Real-Time Traffic Inspection:</strong> View all HTTP requests and responses as they happen</li>
+            <li><strong>Mock Rule Management:</strong> Create and apply mock responses for API testing</li>
             <li><strong>Export/Import Flows:</strong> Save captured traffic as JSON for documentation or sharing</li>
-            <li><strong>Apple Silicon Optimized:</strong> Native support for M1/M2/M3 Macs with ARM64 emulators</li>
+            <li><strong>Debug Build Only:</strong> Interceptor is automatically excluded from release builds</li>
+            <li><strong>Failsafe Design:</strong> Gracefully falls back if plugin server is not running</li>
         </ul>
+
+        <h3>Setup (2 Steps):</h3>
+        <ol>
+            <li>Add the Gradle plugin to your app's <code>build.gradle.kts</code></li>
+            <li>Add the interceptor dependency (debug only)</li>
+        </ol>
+        <p>See the Help tab in the tool window for detailed setup instructions.</p>
 
         <h3>Requirements:</h3>
         <ul>
-            <li>macOS (Apple Silicon or Intel)</li>
-            <li>mitmproxy installed via Homebrew</li>
-            <li>Android emulator, can have Google Api but not Playstore</li>
-            <li>App must trust user certificates (network_security_config.xml)</li>
+            <li>Android app using OkHttp (Retrofit uses OkHttp internally)</li>
+            <li>Android emulator or device</li>
+            <li>Gradle plugin version 7.0+ recommended</li>
         </ul>
 
         <h3>Use Cases:</h3>
         <ul>
-            <li>Test error handling by simulating server errors (500, 404, etc.)</li>
-            <li>Bypass authentication for UI testing</li>
+            <li>Debug network issues in your app</li>
+            <li>Test error handling by mocking server errors</li>
+            <li>Inspect API responses without backend access</li>
+            <li>Document API contracts for your team</li>
             <li>Test offline scenarios and edge cases</li>
-            <li>Validate API responses without backend access</li>
-            <li>Debug network-related issues in production apps</li>
         </ul>
 
         <p>
             <strong>Note:</strong> This tool is designed for development and testing purposes only.
-            It requires mitmproxy to be installed on your system.
+            The interceptor only works in debug builds and has minimal performance impact.
         </p>
     ]]></description>
 

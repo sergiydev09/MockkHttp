@@ -233,6 +233,88 @@ class AppManager(project: Project) {
             )
         }
     }
+
+    /**
+     * Force-stop an app and optionally restart it.
+     * This is useful for clearing app's network cache after proxy configuration changes.
+     */
+    fun forceStopApp(serialNumber: String, packageName: String): Boolean {
+        logger.info("🔴 Force-stopping app: $packageName on $serialNumber")
+
+        try {
+            val device = getDevice(serialNumber)
+            if (device == null) {
+                logger.error("Device not found: $serialNumber")
+                return false
+            }
+
+            val receiver = EmulatorManager.CollectingOutputReceiver()
+            device.executeShellCommand("am force-stop $packageName", receiver, 10, TimeUnit.SECONDS)
+
+            val output = receiver.output
+            if (output.contains("Error", ignoreCase = true)) {
+                logger.error("❌ Failed to force-stop: $output")
+                return false
+            }
+
+            logger.info("✅ App force-stopped: $packageName")
+            return true
+
+        } catch (e: Exception) {
+            logger.error("Failed to force-stop app", e)
+            return false
+        }
+    }
+
+    /**
+     * Start an app's main activity.
+     */
+    fun startApp(serialNumber: String, packageName: String): Boolean {
+        logger.info("▶️ Starting app: $packageName on $serialNumber")
+
+        try {
+            val device = getDevice(serialNumber)
+            if (device == null) {
+                logger.error("Device not found: $serialNumber")
+                return false
+            }
+
+            val receiver = EmulatorManager.CollectingOutputReceiver()
+            // Use monkey to launch the app (more reliable than getting main activity)
+            device.executeShellCommand("monkey -p $packageName -c android.intent.category.LAUNCHER 1", receiver, 10, TimeUnit.SECONDS)
+
+            val output = receiver.output
+            if (output.contains("No activities found", ignoreCase = true) ||
+                output.contains("Error", ignoreCase = true)) {
+                logger.error("❌ Failed to start app: $output")
+                return false
+            }
+
+            logger.info("✅ App started: $packageName")
+            return true
+
+        } catch (e: Exception) {
+            logger.error("Failed to start app", e)
+            return false
+        }
+    }
+
+    /**
+     * Restart an app (force-stop then start).
+     * Useful to clear network cache and force re-connection through proxy.
+     */
+    fun restartApp(serialNumber: String, packageName: String): Boolean {
+        logger.info("🔄 Restarting app: $packageName")
+
+        if (!forceStopApp(serialNumber, packageName)) {
+            return false
+        }
+
+        // Wait briefly for app to fully stop
+        Thread.sleep(1000)
+
+        return startApp(serialNumber, packageName)
+    }
 }
 
 

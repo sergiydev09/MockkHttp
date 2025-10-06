@@ -1,0 +1,259 @@
+package com.sergiy.dev.mockkhttp.ui
+
+import com.intellij.openapi.project.Project
+import com.intellij.ui.JBColor
+import com.intellij.ui.components.JBScrollPane
+import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
+import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
+import java.awt.BorderLayout
+import java.awt.Color
+import java.awt.Desktop
+import java.net.URI
+import javax.swing.*
+
+/**
+ * Extension function to convert Color to hex string.
+ */
+private fun Color.toHex(): String {
+    return String.format("#%02x%02x%02x", red, green, blue)
+}
+
+/**
+ * Help panel showing setup instructions for MockkHttp Interceptor.
+ */
+class HelpPanel(project: Project) : JPanel(BorderLayout()) {
+
+    private val logger = MockkHttpLogger.getInstance(project)
+
+    init {
+        logger.info("Initializing Help Panel...")
+
+        border = JBUI.Borders.empty(15)
+
+        // Get IDE theme colors
+        val backgroundColor = UIUtil.getPanelBackground().toHex()
+        val textColor = UIUtil.getLabelForeground().toHex()
+        val linkColor = JBUI.CurrentTheme.Link.Foreground.ENABLED.toHex()
+        val codeBackground = UIUtil.getTextFieldBackground().toHex()
+        val borderColor = JBColor.border().toHex()
+        val noteBackground = JBColor(0xFFF9E6, 0x4A4A3A).toHex()
+        val noteBorder = JBColor(0xFFC107, 0x8B7500).toHex()
+
+        val helpText = """
+            <html>
+            <head>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                        font-size: 12px;
+                        color: $textColor;
+                        background-color: $backgroundColor;
+                        margin: 10px;
+                    }
+                    h1 {
+                        color: $linkColor;
+                        font-size: 16px;
+                        font-weight: 600;
+                        margin-top: 0;
+                    }
+                    h2 {
+                        color: $linkColor;
+                        font-size: 13px;
+                        font-weight: 600;
+                        margin-top: 20px;
+                        margin-bottom: 8px;
+                    }
+                    code {
+                        background-color: $codeBackground;
+                        padding: 2px 5px;
+                        border-radius: 3px;
+                        font-family: 'JetBrains Mono', 'Consolas', monospace;
+                        font-size: 11px;
+                    }
+                    pre {
+                        background-color: $codeBackground;
+                        padding: 10px;
+                        border: 1px solid $borderColor;
+                        border-radius: 4px;
+                        overflow-x: auto;
+                        font-family: 'JetBrains Mono', 'Consolas', monospace;
+                        font-size: 11px;
+                        line-height: 1.4;
+                    }
+                    .step {
+                        margin: 8px 0;
+                    }
+                    .note {
+                        background-color: $noteBackground;
+                        padding: 10px;
+                        border-left: 3px solid $noteBorder;
+                        margin: 12px 0;
+                        border-radius: 3px;
+                    }
+                    p {
+                        margin: 6px 0;
+                        line-height: 1.5;
+                    }
+                    ul, ol {
+                        margin: 6px 0;
+                        padding-left: 20px;
+                        line-height: 1.6;
+                    }
+                    li {
+                        margin: 4px 0;
+                    }
+                    a {
+                        color: $linkColor;
+                        text-decoration: none;
+                    }
+                    a:hover {
+                        text-decoration: underline;
+                    }
+                </style>
+            </head>
+            <body>
+                <h1>🚀 MockkHttp Setup Guide</h1>
+
+                <p>
+                    MockkHttp uses an OkHttp Interceptor to capture network traffic from your Android app.
+                    Follow these steps to integrate it into your project.
+                </p>
+
+                <h2>📦 Step 1: Add the Gradle Plugin</h2>
+
+                <div class="step">
+                    <p><strong>In your app's <code>build.gradle.kts</code>:</strong></p>
+                    <pre>plugins {
+    id("com.android.application")
+    kotlin("android")
+    id("io.github.sergiydev09.mockkhttp") version "1.2.0"  // Add this
+}</pre>
+                </div>
+
+                <h2>🔧 Step 2: Add the Interceptor Dependency</h2>
+
+                <div class="step">
+                    <p><strong>In your app's <code>build.gradle.kts</code> dependencies:</strong></p>
+                    <pre>dependencies {
+    debugImplementation("io.github.sergiydev09:mockk-http-interceptor:1.2.0")
+    // ... your other dependencies
+}</pre>
+                </div>
+
+                <div class="note">
+                    <strong>🔒 SECURITY - Multiple Protection Layers:</strong>
+                    <ul>
+                        <li><strong>Build-time Check:</strong> Gradle plugin fails the build if MockkHttp is in <code>implementation</code> or <code>releaseImplementation</code></li>
+                        <li><strong>Bytecode Skip:</strong> Plugin automatically skips release variants</li>
+                        <li><strong>Runtime Check:</strong> Interceptor verifies <code>BuildConfig.DEBUG</code> and disables itself in release builds</li>
+                        <li><strong>ProGuard/R8:</strong> Strip rules remove any traces in release APKs</li>
+                    </ul>
+                    <p><strong>Result:</strong> MockkHttp is IMPOSSIBLE to include in production builds, even if you try!</p>
+                </div>
+
+                <div class="note">
+                    <strong>📝 Note:</strong> The Gradle plugin will automatically inject the interceptor into your
+                    OkHttpClient instances at build time. You don't need to modify your code!
+                </div>
+
+                <h2>✅ Step 3: Build Your App</h2>
+
+                <div class="step">
+                    <p>Build and run your app in <strong>Debug mode</strong> on an emulator:</p>
+                    <pre>./gradlew assembleDebug
+./gradlew installDebug</pre>
+                </div>
+
+                <h2>📱 Step 4: Start Intercepting</h2>
+
+                <div class="step">
+                    <ol>
+                        <li>Select your emulator from the dropdown</li>
+                        <li>Select your app from the dropdown</li>
+                        <li>Click <strong>"Start Interceptor"</strong></li>
+                        <li>Launch your app and make network requests</li>
+                        <li>View captured traffic in the Inspector tab</li>
+                    </ol>
+                </div>
+
+                <h2>🔍 How It Works</h2>
+
+                <div class="step">
+                    <p>
+                        The Gradle plugin automatically injects the MockkHttp interceptor into all OkHttpClient
+                        instances in your app during the build process. The interceptor:
+                    </p>
+                    <ul>
+                        <li>Captures HTTP requests and responses</li>
+                        <li>Sends them to this IntelliJ plugin via socket connection</li>
+                        <li>Only active in Debug builds (no impact on Release)</li>
+                        <li>Falls back gracefully if plugin is not running</li>
+                    </ul>
+                </div>
+
+                <h2>❓ Troubleshooting</h2>
+
+                <div class="step">
+                    <p><strong>No flows appearing?</strong></p>
+                    <ul>
+                        <li>Make sure the Gradle plugin is applied in your <code>build.gradle.kts</code></li>
+                        <li>Rebuild your app: <code>./gradlew clean assembleDebug</code></li>
+                        <li>Check that your app is using OkHttp (Retrofit uses OkHttp internally)</li>
+                        <li>Verify the plugin server is running (green status)</li>
+                        <li>Check Logs tab for connection messages</li>
+                    </ul>
+                </div>
+
+                <div class="step">
+                    <p><strong>App crashes or network errors?</strong></p>
+                    <ul>
+                        <li>Make sure you're using the latest version of the interceptor</li>
+                        <li>Check that the emulator can reach host machine (10.0.2.2)</li>
+                        <li>Verify port 9876 is not blocked by firewall</li>
+                    </ul>
+                </div>
+
+                <h2>📚 Resources</h2>
+
+                <div class="step">
+                    <ul>
+                        <li><a href="https://github.com/sergiydev09/MockkHttp">GitHub Repository</a></li>
+                        <li><a href="https://github.com/sergiydev09/MockkHttp/issues">Report Issues</a></li>
+                        <li><a href="https://github.com/sergiydev09/MockkHttp/wiki">Documentation</a></li>
+                    </ul>
+                </div>
+
+                <br/><br/>
+                <p style="color: #6c757d; font-size: 12px;">
+                    MockkHttp v1.2.0 | Built for Android Development
+                </p>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val textPane = JEditorPane("text/html", helpText).apply {
+            isEditable = false
+            isOpaque = false
+
+            // Enable hyperlink clicking
+            addHyperlinkListener { e ->
+                if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) {
+                    try {
+                        Desktop.getDesktop().browse(URI(e.url.toString()))
+                    } catch (ex: Exception) {
+                        logger.error("Failed to open URL: ${e.url}", ex)
+                    }
+                }
+            }
+        }
+
+        val scrollPane = JBScrollPane(textPane).apply {
+            border = JBUI.Borders.empty()
+        }
+
+        add(scrollPane, BorderLayout.CENTER)
+
+        logger.info("✅ Help Panel initialized")
+    }
+}

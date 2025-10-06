@@ -16,7 +16,8 @@ data class HttpFlowData(
     val duration: Double,
     val mockApplied: Boolean = false,
     val mockRuleName: String? = null,
-    val mockRuleId: String? = null
+    val mockRuleId: String? = null,
+    val modified: Boolean = false  // True if response was modified in Debug mode
 )
 
 /**

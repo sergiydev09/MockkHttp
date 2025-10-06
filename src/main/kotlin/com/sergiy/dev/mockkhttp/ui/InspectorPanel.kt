@@ -1,7 +1,6 @@
 package com.sergiy.dev.mockkhttp.ui
 
 import com.intellij.icons.AllIcons
-import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
@@ -12,15 +11,10 @@ import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.adb.*
-import com.sergiy.dev.mockkhttp.cert.CertificateManager
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
-import com.sergiy.dev.mockkhttp.proxy.MitmproxyClient
-import com.sergiy.dev.mockkhttp.proxy.MitmproxyController
-import com.sergiy.dev.mockkhttp.proxy.PluginHttpServer
-import com.sergiy.dev.mockkhttp.proxy.ProxyFirewallManager
+import com.sergiy.dev.mockkhttp.proxy.OkHttpInterceptorServer
 import com.sergiy.dev.mockkhttp.store.FlowStore
-import com.sergiy.dev.mockkhttp.store.MockkRulesStore
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.io.File
@@ -28,18 +22,15 @@ import javax.swing.*
 
 /**
  * Inspector panel with compact vertical controls and flow list.
+ * Uses OkHttpInterceptorServer only (no proxy mode).
  */
 class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private val logger = MockkHttpLogger.getInstance(project)
     private val emulatorManager = EmulatorManager.getInstance(project)
     private val appManager = AppManager.getInstance(project)
-    private val certificateManager = CertificateManager.getInstance(project)
-    private val mitmproxyController = MitmproxyController.getInstance(project)
-    private val pluginHttpServer = PluginHttpServer.getInstance(project)
-    private val proxyFirewallManager = ProxyFirewallManager.getInstance(project)
+    private val okHttpInterceptorServer = OkHttpInterceptorServer.getInstance(project)
     private val flowStore = FlowStore.getInstance(project)
-    private val mockkRulesStore = MockkRulesStore.getInstance(project)
 
     // UI Components
     private val emulatorComboBox: ComboBox<EmulatorInfo>
@@ -58,7 +49,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private var selectedEmulator: EmulatorInfo? = null
     private var selectedApp: AppInfo? = null
     private var currentMode: Mode = Mode.STOPPED
-    private var mitmproxyClient: MitmproxyClient? = null
 
     enum class Mode {
         STOPPED,
@@ -109,7 +99,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             addActionListener { refreshApps() }
         }
 
-        // Create mode buttons (horizontal layout with icons and text)
+        // Create mode buttons
         recordingButton = JToggleButton("Recording", AllIcons.Debugger.Db_set_breakpoint).apply {
             toolTipText = "Start/Stop Recording Mode"
             isEnabled = false
@@ -210,6 +200,19 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
         }
 
+        flowStore.addFlowUpdatedListener { updatedFlow ->
+            SwingUtilities.invokeLater {
+                // Find and update the flow in the list
+                for (i in 0 until flowListModel.size()) {
+                    val existingFlow = flowListModel.getElementAt(i)
+                    if (existingFlow.flowId == updatedFlow.flowId) {
+                        flowListModel.setElementAt(updatedFlow, i)
+                        break
+                    }
+                }
+            }
+        }
+
         flowStore.addFlowsClearedListener {
             SwingUtilities.invokeLater {
                 flowListModel.clear()
@@ -275,7 +278,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             add(combinedPanel, BorderLayout.CENTER)
         }
 
-        // Center panel: Flow list (full width now, no left buttons panel)
+        // Center panel: Flow list
         val flowPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(5)
             add(JBScrollPane(flowList), BorderLayout.CENTER)
@@ -353,10 +356,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             selectedEmulator = null
             selectedApp = null
 
-            // Stop proxy if running
+            // Stop interceptor if running
             if (currentMode != Mode.STOPPED) {
-                logger.warn("⚠️ Stopping proxy due to emulator disconnection")
-                stopProxy()
+                logger.warn("⚠️ Stopping interceptor due to emulator disconnection")
+                stop()
             }
         }
     }
@@ -392,155 +395,126 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun updateButtonStates() {
         val hasSelection = selectedEmulator != null && selectedApp != null
         refreshAppsButton.isEnabled = selectedEmulator != null
-        recordingButton.isEnabled = hasSelection
-        debugButton.isEnabled = hasSelection
-        mockkButton.isEnabled = hasSelection
+        recordingButton.isEnabled = hasSelection || currentMode != Mode.STOPPED
+        debugButton.isEnabled = hasSelection || currentMode != Mode.STOPPED
+        mockkButton.isEnabled = hasSelection || currentMode != Mode.STOPPED
     }
 
     private fun toggleRecording() {
         if (recordingButton.isSelected) {
-            // User clicked to activate Recording
-            when (currentMode) {
-                Mode.STOPPED -> startProxy(Mode.RECORDING)
-                Mode.RECORDING -> {} // Already in recording, do nothing
-                Mode.DEBUG -> switchToRecording()
-                Mode.MOCKK -> switchToRecording()
+            // If another mode is active, switch to this mode
+            if (currentMode != Mode.STOPPED && currentMode != Mode.RECORDING) {
+                switchMode(Mode.RECORDING)
+            } else {
+                start(Mode.RECORDING)
             }
         } else {
-            // User clicked to deactivate Recording
-            if (currentMode == Mode.RECORDING) {
-                stopProxy()
-            }
+            stop()
         }
     }
 
     private fun toggleDebug() {
         if (debugButton.isSelected) {
-            // User clicked to activate Debug
-            when (currentMode) {
-                Mode.STOPPED -> startProxy(Mode.DEBUG)
-                Mode.DEBUG -> {} // Already in debug, do nothing
-                Mode.RECORDING -> switchToDebug()
-                Mode.MOCKK -> switchToDebug()
+            // If another mode is active, switch to this mode
+            if (currentMode != Mode.STOPPED && currentMode != Mode.DEBUG) {
+                switchMode(Mode.DEBUG)
+            } else {
+                start(Mode.DEBUG)
             }
         } else {
-            // User clicked to deactivate Debug
-            if (currentMode == Mode.DEBUG) {
-                stopProxy()
-            }
+            stop()
         }
     }
 
     private fun toggleMockk() {
         if (mockkButton.isSelected) {
-            // User clicked to activate Mockk
-            when (currentMode) {
-                Mode.STOPPED -> startProxy(Mode.MOCKK)
-                Mode.MOCKK -> {} // Already in mockk, do nothing
-                Mode.RECORDING -> switchToMockk()
-                Mode.DEBUG -> switchToMockk()
+            // If another mode is active, switch to this mode
+            if (currentMode != Mode.STOPPED && currentMode != Mode.MOCKK) {
+                switchMode(Mode.MOCKK)
+            } else {
+                start(Mode.MOCKK)
             }
         } else {
-            // User clicked to deactivate Mockk
-            if (currentMode == Mode.MOCKK) {
-                stopProxy()
-            }
+            stop()
         }
     }
 
-    private fun startProxy(mode: Mode) {
-        val emulator = selectedEmulator ?: return
-        val app = selectedApp ?: return
-
-        object : Task.Backgroundable(project, "Starting ${mode.name.lowercase()} mode", true) {
+    /**
+     * Switch from current mode to a new mode without fully stopping the server.
+     * Just changes the server's mode internally.
+     */
+    private fun switchMode(newMode: Mode) {
+        object : Task.Backgroundable(project, "Switching to ${newMode.name} mode", false) {
             override fun run(indicator: ProgressIndicator) {
                 try {
-                    // Check mitmproxy
-                    if (!certificateManager.isMitmproxyInstalled()) {
-                        SwingUtilities.invokeLater {
-                            showMitmproxyNotFoundDialog()
+                    logger.info("🔄 Switching from ${currentMode.name} to ${newMode.name} mode...")
+
+                    // Map mode to OkHttpInterceptorServer.Mode
+                    val serverMode = when (newMode) {
+                        Mode.RECORDING -> OkHttpInterceptorServer.Mode.RECORDING
+                        Mode.DEBUG -> OkHttpInterceptorServer.Mode.DEBUG
+                        Mode.MOCKK -> OkHttpInterceptorServer.Mode.MOCKK
+                        Mode.STOPPED -> throw Exception("Cannot switch to STOPPED mode")
+                    }
+
+                    // Change mode on the server (server stays running)
+                    okHttpInterceptorServer.setMode(serverMode)
+
+                    // Update UI
+                    SwingUtilities.invokeLater {
+                        currentMode = newMode
+                        recordingButton.isSelected = (newMode == Mode.RECORDING)
+                        debugButton.isSelected = (newMode == Mode.DEBUG)
+                        mockkButton.isSelected = (newMode == Mode.MOCKK)
+
+                        val statusText = when (newMode) {
+                            Mode.RECORDING -> "Recording..."
+                            Mode.DEBUG -> "Debug Mode"
+                            Mode.MOCKK -> "Mockk Mode"
+                            Mode.STOPPED -> "Stopped"
                         }
-                        return
+                        val statusColor = when (newMode) {
+                            Mode.RECORDING -> JBColor.GREEN
+                            Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
+                            Mode.MOCKK -> JBColor.ORANGE
+                            Mode.STOPPED -> JBColor.GRAY
+                        }
+
+                        updateStatus(statusText, statusColor)
+                        updateButtonStates()
                     }
 
-                    // Generate certificate (mitmproxy will create it if needed)
-                    if (!certificateManager.generateCertificateIfNeeded()) {
-                        throw Exception("Failed to prepare certificate directory")
-                    }
+                    logger.info("✅ Switched to ${newMode.name} mode")
 
-                    // Start plugin HTTP server
-                    if (!pluginHttpServer.start()) {
-                        throw Exception("Failed to start plugin HTTP server")
-                    }
+                } catch (e: Exception) {
+                    logger.error("Failed to switch mode", e)
+                }
+            }
+        }.queue()
+    }
 
-                    // Register flow callback - ALWAYS intercept, decide what to do based on mode
-                    pluginHttpServer.registerFlowCallback("proxy") { flow ->
-                        handleIncomingFlow(flow)
-                    }
+    private fun start(mode: Mode) {
+        object : Task.Backgroundable(project, "Starting ${mode.name} Mode", true) {
+            override fun run(indicator: ProgressIndicator) {
+                try {
+                    logger.info("🔌 Starting ${mode.name} Mode...")
 
-                    // Start mitmproxy with requested mode
-                    val addonPath = getAddonScriptPath() ?: throw Exception("Addon script not found")
-                    val mitmMode = when (mode) {
-                        Mode.RECORDING -> MitmproxyController.Mode.RECORDING
-                        Mode.DEBUG -> MitmproxyController.Mode.DEBUG
-                        Mode.MOCKK -> MitmproxyController.Mode.MOCKK
+                    // Map mode to OkHttpInterceptorServer.Mode
+                    val serverMode = when (mode) {
+                        Mode.RECORDING -> OkHttpInterceptorServer.Mode.RECORDING
+                        Mode.DEBUG -> OkHttpInterceptorServer.Mode.DEBUG
+                        Mode.MOCKK -> OkHttpInterceptorServer.Mode.MOCKK
                         Mode.STOPPED -> throw Exception("Cannot start in STOPPED mode")
                     }
-                    val config = MitmproxyController.MitmproxyConfig(
-                        mode = mitmMode,
-                        addonScriptPath = addonPath
-                    )
 
-                    if (!mitmproxyController.start(config)) {
-                        throw Exception("Failed to start mitmproxy")
+                    // Start OkHttpInterceptorServer with the selected mode
+                    if (!okHttpInterceptorServer.start(serverMode)) {
+                        throw Exception("Failed to start OkHttp Interceptor Server")
                     }
 
-                    // Install certificate on device (mitmproxy has generated it by now)
-                    indicator.text = "Installing certificate..."
-                    logger.info("Installing certificate on device...")
-                    val certResult = certificateManager.installUserCertificate(emulator.serialNumber)
-                    when (certResult) {
-                        CertificateManager.CertInstallResult.INSTALLED_AUTOMATICALLY -> {
-                            logger.info("✅ Certificate installed successfully")
-                        }
-                        CertificateManager.CertInstallResult.REQUIRES_MANUAL_INSTALL -> {
-                            logger.warn("⚠️ Certificate requires manual installation")
-                            SwingUtilities.invokeLater {
-                                JOptionPane.showMessageDialog(
-                                    this@InspectorPanel,
-                                    "Certificate copied to Downloads.\nPlease install manually:\n" +
-                                            "Settings → Security → Install Certificate",
-                                    "Manual Installation Required",
-                                    JOptionPane.WARNING_MESSAGE
-                                )
-                            }
-                        }
-                        CertificateManager.CertInstallResult.FAILED -> {
-                            throw Exception("Failed to install certificate on device")
-                        }
-                    }
-
-                    // Configure iptables firewall for app-only filtering
-                    indicator.text = "Configuring firewall rules..."
-                    logger.info("Configuring iptables firewall for UID ${app.uid}...")
-
-                    if (app.uid == null) {
-                        throw Exception("App UID not available - cannot configure firewall")
-                    }
-
-                    if (!proxyFirewallManager.setupAppFirewall(emulator.serialNumber, app.uid)) {
-                        throw Exception("Failed to configure firewall rules")
-                    }
-
-                    // Create client for resume commands
-                    mitmproxyClient = MitmproxyClient(logger)
-
-                    // Filtering is now handled in mitmproxy addon via filter_uid parameter
-                    if (selectedApp?.uid != null) {
-                        logger.info("🔍 Filtering enabled for ${selectedApp!!.packageName} (UID: ${selectedApp!!.uid})")
-                    } else {
-                        logger.info("ℹ️ No UID available, showing all flows")
-                    }
+                    logger.info("✅ OkHttp Interceptor Server started on port ${OkHttpInterceptorServer.SERVER_PORT}")
+                    logger.info("📱 Waiting for app connections...")
+                    logger.info("   Make sure your app includes the MockkHttp Gradle plugin!")
 
                     // Update UI
                     SwingUtilities.invokeLater {
@@ -548,10 +522,11 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         recordingButton.isSelected = (mode == Mode.RECORDING)
                         debugButton.isSelected = (mode == Mode.DEBUG)
                         mockkButton.isSelected = (mode == Mode.MOCKK)
+
                         val statusText = when (mode) {
                             Mode.RECORDING -> "Recording..."
-                            Mode.DEBUG -> "Debug Mode Active"
-                            Mode.MOCKK -> "Mockk Mode Active"
+                            Mode.DEBUG -> "Debug Mode"
+                            Mode.MOCKK -> "Mockk Mode"
                             Mode.STOPPED -> "Stopped"
                         }
                         val statusColor = when (mode) {
@@ -560,6 +535,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                             Mode.MOCKK -> JBColor.ORANGE
                             Mode.STOPPED -> JBColor.GRAY
                         }
+
                         updateStatus(statusText, statusColor)
                         updateButtonStates()
                     }
@@ -567,12 +543,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     logger.info("✅ ${mode.name} mode started")
 
                 } catch (e: Exception) {
-                    logger.error("Failed to start proxy", e)
-                    mitmproxyController.stop()
-                    pluginHttpServer.stop()
+                    logger.error("Failed to start ${mode.name} mode", e)
+                    okHttpInterceptorServer.stop()
 
                     SwingUtilities.invokeLater {
-                        // Deactivate all mode buttons on error
                         currentMode = Mode.STOPPED
                         recordingButton.isSelected = false
                         debugButton.isSelected = false
@@ -592,213 +566,12 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         }.queue()
     }
 
-    private fun handleIncomingFlow(flow: HttpFlowData) {
-        // For now, disable filtering - show all flows
-        // TODO: Implement proper filtering using process-based approach
-        val app = selectedApp
-        if (app != null) {
-            logger.debug("Flow received: ${flow.request.method} ${flow.request.host} (filtering disabled)")
-        }
-
-        // Always show flows for now
-        flowStore.addFlow(flow)
-
-        when (currentMode) {
-            Mode.RECORDING -> {
-                // Recording mode: just capture flows, don't modify them
-                // Flows are not intercepted in recording mode, so they complete immediately
-                logger.debug("📝 Flow recorded: ${flow.request.method} ${flow.request.url}")
-            }
-            Mode.DEBUG -> {
-                // Show dialog if paused
-                if (flow.paused) {
-                    SwingUtilities.invokeLater {
-                        showDebugDialog(flow)
-                    }
-                } else {
-                    logger.warn("⚠️ Received non-paused flow in DEBUG mode: ${flow.flowId}")
-                }
-            }
-            Mode.MOCKK -> {
-                // Mockk mode: mocks are applied by mitmproxy Python addon
-                // Just log that a flow was received (with or without mock)
-                if (flow.mockApplied) {
-                    logger.info("📋 Received mocked flow: ${flow.mockRuleName}")
-                } else {
-                    logger.debug("📝 Flow recorded (no mock applied): ${flow.request.method} ${flow.request.url}")
-                }
-            }
-            Mode.STOPPED -> {
-                // Should not happen, but just in case
-                logger.warn("⚠️ Received flow while in STOPPED mode: ${flow.flowId}")
-            }
-        }
-    }
-
-    private fun showDebugDialog(flow: HttpFlowData) {
-        val dialog = DebugInterceptDialog(project, flow)
-        if (dialog.showAndGet()) {
-            val modifiedResponse = dialog.getModifiedResponse()
-            val saveAsMock = dialog.shouldSaveAsMock()
-
-            // Save as mock rule if requested
-            if (saveAsMock && modifiedResponse != null) {
-                val structuredUrl = com.sergiy.dev.mockkhttp.model.StructuredUrl.fromUrl(flow.request.url)
-                mockkRulesStore.addRule(
-                    name = dialog.getMockRuleName(),
-                    method = flow.request.method,
-                    structuredUrl = structuredUrl,
-                    mockResponse = modifiedResponse
-                )
-                logger.info("💾 Saved as mock rule: ${dialog.getMockRuleName()}")
-            }
-
-            // Resume flow
-            mitmproxyClient?.resumeFlow(flow.flowId, modifiedResponse)
-            logger.info("✅ Flow resumed")
-        } else {
-            // User cancelled, resume with original
-            mitmproxyClient?.resumeFlow(flow.flowId, null)
-            logger.info("▶️ Flow resumed with original response")
-        }
-    }
-
-    private fun switchToRecording() {
-        logger.info("Switching to Recording Mode...")
-
-        object : Task.Backgroundable(project, "Switching to Recording mode", false) {
+    private fun stop() {
+        object : Task.Backgroundable(project, "Stopping Interceptor Server", false) {
             override fun run(indicator: ProgressIndicator) {
                 try {
-                    // Stop current mitmproxy (keep HTTP server running)
-                    mitmproxyController.stop()
-                    Thread.sleep(500) // Wait for mitmproxy to stop
-
-                    // Restart mitmproxy in RECORDING mode
-                    restartMitmproxyWithMode(Mode.RECORDING)
-                } catch (e: Exception) {
-                    logger.error("Failed to switch to Recording mode", e)
-                    SwingUtilities.invokeLater {
-                        updateStatus("Error switching to Recording mode", JBColor.RED)
-                    }
-                }
-            }
-        }.queue()
-    }
-
-    private fun switchToDebug() {
-        logger.info("Switching to Debug Mode...")
-
-        object : Task.Backgroundable(project, "Switching to Debug mode", false) {
-            override fun run(indicator: ProgressIndicator) {
-                try {
-                    // Stop current mitmproxy (keep HTTP server running)
-                    mitmproxyController.stop()
-                    Thread.sleep(500) // Wait for mitmproxy to stop
-
-                    // Restart mitmproxy in DEBUG mode
-                    restartMitmproxyWithMode(Mode.DEBUG)
-                } catch (e: Exception) {
-                    logger.error("Failed to switch to Debug mode", e)
-                    SwingUtilities.invokeLater {
-                        updateStatus("Error switching to Debug mode", JBColor.RED)
-                    }
-                }
-            }
-        }.queue()
-    }
-
-    private fun switchToMockk() {
-        logger.info("Switching to Mockk Mode...")
-
-        object : Task.Backgroundable(project, "Switching to Mockk mode", false) {
-            override fun run(indicator: ProgressIndicator) {
-                try {
-                    // Stop current mitmproxy (keep HTTP server running)
-                    mitmproxyController.stop()
-                    Thread.sleep(500) // Wait for mitmproxy to stop
-
-                    // Restart mitmproxy in MOCKK mode
-                    restartMitmproxyWithMode(Mode.MOCKK)
-                } catch (e: Exception) {
-                    logger.error("Failed to switch to Mockk mode", e)
-                    SwingUtilities.invokeLater {
-                        updateStatus("Error switching to Mockk mode", JBColor.RED)
-                    }
-                }
-            }
-        }.queue()
-    }
-
-    private fun restartMitmproxyWithMode(mode: Mode) {
-        val addonPath = getAddonScriptPath() ?: throw Exception("Addon script not found")
-        val mitmMode = when (mode) {
-            Mode.RECORDING -> MitmproxyController.Mode.RECORDING
-            Mode.DEBUG -> MitmproxyController.Mode.DEBUG
-            Mode.MOCKK -> MitmproxyController.Mode.MOCKK
-            Mode.STOPPED -> throw Exception("Cannot start in STOPPED mode")
-        }
-        val config = MitmproxyController.MitmproxyConfig(
-            mode = mitmMode,
-            addonScriptPath = addonPath
-        )
-
-        if (!mitmproxyController.start(config)) {
-            throw Exception("Failed to restart mitmproxy")
-        }
-
-        // Configure iptables firewall for app-only filtering
-        val app = selectedApp
-        val emulator = selectedEmulator
-        if (app != null && emulator != null && app.uid != null) {
-            if (!proxyFirewallManager.setupAppFirewall(emulator.serialNumber, app.uid)) {
-                throw Exception("Failed to configure firewall rules")
-            }
-            SwingUtilities.invokeLater {
-                logger.info("🔍 Filtering enabled for ${app.packageName} (UID: ${app.uid})")
-            }
-        }
-
-        SwingUtilities.invokeLater {
-            currentMode = mode
-            when (mode) {
-                Mode.RECORDING -> {
-                    recordingButton.isSelected = true
-                    debugButton.isSelected = false
-                    mockkButton.isSelected = false
-                    updateStatus("Recording...", JBColor.GREEN)
-                }
-                Mode.DEBUG -> {
-                    recordingButton.isSelected = false
-                    debugButton.isSelected = true
-                    mockkButton.isSelected = false
-                    updateStatus("Debug Mode Active", JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN))
-                }
-                Mode.MOCKK -> {
-                    recordingButton.isSelected = false
-                    debugButton.isSelected = false
-                    mockkButton.isSelected = true
-                    updateStatus("Mockk Mode Active", JBColor.ORANGE)
-                }
-                Mode.STOPPED -> {}
-            }
-            logger.info("✅ ${mode.name} mode started")
-        }
-    }
-
-    private fun stopProxy() {
-        object : Task.Backgroundable(project, "Stopping proxy", false) {
-            override fun run(indicator: ProgressIndicator) {
-                try {
-                    mitmproxyController.stop()
-                    pluginHttpServer.stop()
-
-                    // Clean up firewall rules
-                    selectedEmulator?.let { emulator ->
-                        selectedApp?.uid?.let { uid ->
-                            indicator.text = "Removing firewall rules..."
-                            proxyFirewallManager.clearAppFirewall(emulator.serialNumber, uid)
-                        }
-                    }
+                    okHttpInterceptorServer.stop()
+                    logger.info("🔌 Stopped OkHttp Interceptor Server")
 
                     SwingUtilities.invokeLater {
                         currentMode = Mode.STOPPED
@@ -812,7 +585,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     logger.info("✅ Stopped")
 
                 } catch (e: Exception) {
-                    logger.error("Error stopping proxy", e)
+                    logger.error("Error stopping interceptor", e)
                 }
             }
         }.queue()
@@ -880,80 +653,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
-    private fun getAddonScriptPath(): String? {
-        try {
-            val resourcePath = "mitmproxy_addon/debug_interceptor.py"
-            val inputStream = this.javaClass.classLoader.getResourceAsStream(resourcePath) ?: return null
-
-            val tempFile = File.createTempFile("debug_interceptor", ".py")
-            tempFile.deleteOnExit()
-
-            inputStream.use { input ->
-                tempFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-
-            return tempFile.absolutePath
-        } catch (e: Exception) {
-            logger.error("Failed to extract addon script", e)
-            return null
-        }
-    }
-
     private fun updateStatus(message: String, color: JBColor) {
         SwingUtilities.invokeLater {
             statusLabel.text = message
             statusLabel.foreground = color
-        }
-    }
-
-    /**
-     * Show a detailed dialog when mitmproxy is not found, with installation instructions
-     * and option to configure manually.
-     */
-    private fun showMitmproxyNotFoundDialog() {
-        val message = """
-            MockkHttp could not find mitmproxy on your system.
-
-            To install mitmproxy, use one of these methods:
-
-            • Homebrew (recommended for macOS):
-              brew install mitmproxy
-
-            • pipx (Python):
-              pipx install mitmproxy
-
-            • pip (Python):
-              pip install mitmproxy
-
-            After installation, restart the IDE or click "Configure Manually"
-            to specify the mitmproxy executable path.
-
-            Common installation locations:
-            • /opt/homebrew/bin/mitmproxy (Apple Silicon)
-            • /usr/local/bin/mitmproxy (Intel Mac)
-            • ~/.local/bin/mitmproxy (pipx)
-        """.trimIndent()
-
-        val options = arrayOf("Configure Manually", "OK")
-        val result = JOptionPane.showOptionDialog(
-            this,
-            message,
-            "Mitmproxy Not Found",
-            JOptionPane.DEFAULT_OPTION,
-            JOptionPane.WARNING_MESSAGE,
-            null,
-            options,
-            options[1]
-        )
-
-        if (result == 0) {
-            // Open settings dialog
-            ShowSettingsUtil.getInstance().showSettingsDialog(
-                project,
-                "MockkHttp"
-            )
         }
     }
 
@@ -1021,19 +724,23 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     else -> "●"
                 }
 
-                // Add mock badge if mock was applied
-                val mockBadge = if (value.mockApplied) {
-                    "[MOCK: ${value.mockRuleName}] "
-                } else {
-                    ""
+                // Add badge based on type
+                val badge = when {
+                    value.modified -> "[DEBUG: Modified] "
+                    value.mockApplied -> "[MOCK: ${value.mockRuleName}] "
+                    else -> ""
                 }
 
-                // Show full URL with mock indicator
-                text = "$statusIcon $mockBadge${value.request.method} ${value.request.url}"
+                // Show full URL with badge
+                text = "$statusIcon $badge${value.request.method} ${value.request.url}"
 
-                // Change foreground color for mocked flows
-                if (value.mockApplied && !isSelected) {
-                    foreground = JBColor.ORANGE
+                // Change foreground color based on type
+                if (!isSelected) {
+                    foreground = when {
+                        value.modified -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
+                        value.mockApplied -> JBColor.ORANGE
+                        else -> list?.foreground ?: JBColor.foreground()
+                    }
                 }
             }
 

@@ -51,13 +51,13 @@ class MockkHttpToolWindow(project: Project) : JPanel(BorderLayout()) {
             throw e
         }
 
-        // Add Config tab
+        // Add Help tab
         try {
-            val configPanel = ConfigPanel(project)
-            tabbedPane.addTab("Config", configPanel)
-            logger.debug("Config panel added successfully")
+            val helpPanel = HelpPanel(project)
+            tabbedPane.addTab("Help", helpPanel)
+            logger.debug("Help panel added successfully")
         } catch (e: Exception) {
-            logger.error("Failed to create Config panel", e)
+            logger.error("Failed to create Help panel", e)
             throw e
         }
 

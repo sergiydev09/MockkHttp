@@ -6,6 +6,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "MockkHttp"
-
-include(":gradle-plugin")
+rootProject.name = "android-interceptor"
