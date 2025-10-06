@@ -77,10 +77,8 @@ class MockkHttpGradlePlugin : Plugin<Project> {
                 }
             }
 
-            project.dependencies.add(
-                "debugImplementation",
-                "com.sergiy.dev.mockkhttp:android-interceptor:1.0.0"
-            )
+            // Don't add dependency automatically - user must add it manually
+            // This prevents version mismatch issues with JitPack
         }
 
         // Register bytecode transformation ONLY for debug builds

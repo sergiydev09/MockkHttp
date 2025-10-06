@@ -1,5 +1,5 @@
 install:
-  - ./gradlew :gradle-plugin:publishToMavenLocal -x test
+  - ./gradlew :gradle-plugin:publishToMavenLocal :android-library:publishToMavenLocal -x test
 before_install:
   - sdk list java
   - sdk use java 21.0.2-open

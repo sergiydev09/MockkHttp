@@ -9,8 +9,8 @@ repositories {
     mavenCentral()
 }
 
-group = "com.sergiy.dev.mockkhttp"
-version = "1.2.0"
+group = "com.github.sergiydev09"
+version = "1.2.3"
 
 android {
     namespace = "com.sergiy.dev.mockkhttp.interceptor"
@@ -56,9 +56,9 @@ afterEvaluate {
         publications {
             create<MavenPublication>("release") {
                 from(components["release"])
-                groupId = "com.sergiy.dev.mockkhttp"
-                artifactId = "android-interceptor"
-                version = "1.2.0"
+                groupId = "com.github.sergiydev09"
+                artifactId = "mockk-http-interceptor"
+                version = "1.2.3"
             }
         }
     }
