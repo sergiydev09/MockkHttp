@@ -77,8 +77,12 @@ class MockkHttpGradlePlugin : Plugin<Project> {
                 }
             }
 
-            // Don't add dependency automatically - user must add it manually
-            // This prevents version mismatch issues with JitPack
+            // Automatically add android-library dependency for debug builds
+            val pluginVersion = "1.2.8" // Must match gradle-plugin version
+            project.dependencies.add(
+                "debugImplementation",
+                "com.github.sergiydev09.MockkHttp:mockk-http-interceptor:$pluginVersion"
+            )
         }
 
         // Register bytecode transformation ONLY for debug builds
