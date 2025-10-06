@@ -9,3 +9,4 @@ pluginManagement {
 rootProject.name = "MockkHttp"
 
 include(":gradle-plugin")
+include(":android-library")
