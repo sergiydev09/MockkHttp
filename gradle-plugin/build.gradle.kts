@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.github.sergiydev09.mockkhttp"
-version = "1.2.1"
+version = "1.2.2"
 
 repositories {
     google()
@@ -38,4 +38,8 @@ gradlePlugin {
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+    kotlinOptions.jvmTarget = "17"
 }
