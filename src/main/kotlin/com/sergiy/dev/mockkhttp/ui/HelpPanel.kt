@@ -108,13 +108,13 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                 <h1>🚀 MockkHttp Setup Guide</h1>
 
                 <div class="note">
-                    <strong>⚠️ IMPORTANT - Version 1.4.0 Update Required</strong>
+                    <strong>⚠️ IMPORTANT - Version 1.4.1 Update Required</strong>
                     <p>
-                        This version (1.4.0) includes Android 16KB page size support, AGP 8.7.3 compatibility, and automatic dependency injection.
-                        <strong>You MUST update your Gradle plugin to version 1.4.0</strong> for proper functionality.
+                        This version (1.4.1) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
+                        Just apply the Gradle plugin and it handles everything.
                     </p>
                     <p>
-                        New features include improved multi-module publishing and enhanced Gradle plugin auto-injection.
+                        Features: Android 16KB page size support, AGP 8.7.3 compatibility, improved multi-module publishing.
                     </p>
                 </div>
 
@@ -130,9 +130,13 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     <pre>plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.4.0"  // ⚠️ Update to 1.4.0!
-}</pre>
-                    <p><em>That's it! The plugin automatically adds the interceptor dependency and injects it into OkHttpClient instances.</em></p>
+    id("io.github.sergiydev09.mockkhttp") version "1.4.1"
+}
+
+// That's it! No dependencies needed.
+// The plugin automatically handles everything.</pre>
+                    <p><em>The plugin automatically adds the interceptor dependency and injects it into all OkHttpClient instances.</em></p>
+                    <p><strong>⚠️ Do NOT add the dependency manually - the plugin does it for you!</strong></p>
                 </div>
 
                 <div class="note">
@@ -215,7 +219,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
                 <br/><br/>
                 <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.4.0 | Android 16KB Page Size Support | Built for Android Development
+                    MockkHttp v1.4.1 | Fully Automatic Setup | Built for Android Development
                 </p>
             </body>
             </html>

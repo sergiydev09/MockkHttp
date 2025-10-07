@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.4.0"
+version = "1.4.1"
 
 repositories {
     mavenCentral()
@@ -46,20 +46,25 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.4.0 - Android 16KB Page Size Support & Gradle Plugin Improvements</h3>
+            <h3>Version 1.4.1 - Documentation Fix (No Manual Dependencies!)</h3>
             <ul>
-                <li><strong>📱 Android 16KB Page Size:</strong> Full support for devices with 16KB page size (Android 15+)</li>
-                <li><strong>🔧 Gradle Plugin Auto-Injection:</strong> Automatically injects android-library dependency (no manual setup needed)</li>
-                <li><strong>⚡ AGP 8.7.3:</strong> Updated to latest Android Gradle Plugin for better compatibility</li>
-                <li><strong>🐛 JitPack Fixes:</strong> Improved multi-module publishing and groupId consistency</li>
-                <li><strong>✨ Code Cleanup:</strong> Removed unused dependencies and improved code quality</li>
+                <li><strong>📝 Documentation Fix:</strong> Corrected setup instructions - <strong>NO need to add dependencies manually!</strong></li>
+                <li><strong>✅ Fully Automatic:</strong> Just apply the plugin and it handles everything (dependency injection + bytecode transformation)</li>
+                <li><strong>📚 Updated Docs:</strong> README and Help panel now correctly state that manual dependency is NOT needed</li>
             </ul>
 
-            <h3>Important: Update Gradle Plugin</h3>
+            <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>⚠️ REQUIRED:</strong> Update Gradle plugin to version <code>1.4.0</code> in your app</li>
-                <li>New version includes automatic dependency injection and 16KB page size support</li>
-                <li>Compatible with Android 15+ and devices using 16KB memory pages</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.1"</code> to plugins block</li>
+                <li><strong>Step 2:</strong> That's it! The plugin automatically adds the dependency and injects the interceptor</li>
+                <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
+            </ul>
+
+            <h3>Version 1.4.0 Features (Previous)</h3>
+            <ul>
+                <li><strong>📱 Android 16KB Page Size:</strong> Full support for Android 15+ devices</li>
+                <li><strong>🔧 Gradle Plugin Auto-Injection:</strong> Automatic dependency and interceptor injection</li>
+                <li><strong>⚡ AGP 8.7.3:</strong> Latest Android Gradle Plugin compatibility</li>
             </ul>
 
             <h3>Previous Version 1.3.9 - Multi-Project Support</h3>
@@ -82,7 +87,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.0"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.1"</code></li>
             </ul>
         """.trimIndent()
     }
