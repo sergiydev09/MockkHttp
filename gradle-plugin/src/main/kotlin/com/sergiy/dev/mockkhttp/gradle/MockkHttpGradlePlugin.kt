@@ -78,7 +78,7 @@ class MockkHttpGradlePlugin : Plugin<Project> {
             }
 
             // Automatically add android-library dependency for debug builds
-            val pluginVersion = "1.3.0" // Must match gradle-plugin version
+            val pluginVersion = "1.3.1" // Must match gradle-plugin version
             project.dependencies.add(
                 "debugImplementation",
                 "com.github.sergiydev09.MockkHttp:mockk-http-interceptor:$pluginVersion"
