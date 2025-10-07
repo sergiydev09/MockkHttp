@@ -12,17 +12,27 @@ import org.objectweb.asm.commons.AdviceAdapter
 /**
  * ASM class visitor factory that injects MockkHttpInterceptor into OkHttpClient.Builder.
  *
- * This transforms:
+ * This transforms ANY OkHttpClient.Builder.build() call, including those in DI frameworks like Koin/Dagger:
+ *
+ * **Simple case:**
  * ```
  * val client = OkHttpClient.Builder().build()
  * ```
  *
- * Into:
+ * **Koin/Dagger modules:**
+ * ```
+ * single { OkHttpClient.Builder().build() }
+ * single { provideOkHttpClient() }
+ * ```
+ *
+ * **Into:**
  * ```
  * val client = OkHttpClient.Builder()
  *     .addInterceptor(MockkHttpInterceptor(null))
  *     .build()
  * ```
+ *
+ * Works regardless of where the Builder was created (same method, different method, DI framework, etc.)
  */
 abstract class OkHttpInterceptorTransform : AsmClassVisitorFactory<InstrumentationParameters.None> {
 
@@ -74,8 +84,6 @@ class OkHttpMethodVisitor(
         private var hasLoggedInjection = false
     }
 
-    private var detectedBuilder = false
-
     override fun visitMethodInsn(
         opcode: Int,
         owner: String,
@@ -83,17 +91,9 @@ class OkHttpMethodVisitor(
         descriptor: String,
         isInterface: Boolean
     ) {
-        // Detect OkHttpClient.Builder() constructor
-        if (opcode == Opcodes.INVOKESPECIAL &&
-            name == "<init>" &&
-            isOkHttpBuilder(owner)
-        ) {
-            detectedBuilder = true
-        }
-
-        // Inject interceptor BEFORE .build() is called
-        if (detectedBuilder &&
-            opcode == Opcodes.INVOKEVIRTUAL &&
+        // Inject interceptor BEFORE .build() is called on OkHttpClient.Builder
+        // This works regardless of where the Builder was created (same method, different method, DI framework, etc.)
+        if (opcode == Opcodes.INVOKEVIRTUAL &&
             name == "build" &&
             isOkHttpBuilder(owner)
         ) {

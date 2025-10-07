@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.4.1"
+version = "1.4.2"
 
 repositories {
     mavenCentral()
@@ -46,21 +46,21 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.4.1 - Documentation Fix (No Manual Dependencies!)</h3>
+            <h3>Version 1.4.2 - Koin/Dagger DI Support Fix</h3>
             <ul>
-                <li><strong>📝 Documentation Fix:</strong> Corrected setup instructions - <strong>NO need to add dependencies manually!</strong></li>
-                <li><strong>✅ Fully Automatic:</strong> Just apply the plugin and it handles everything (dependency injection + bytecode transformation)</li>
-                <li><strong>📚 Updated Docs:</strong> README and Help panel now correctly state that manual dependency is NOT needed</li>
+                <li><strong>🔧 Fix:</strong> Interceptor now works with Dependency Injection frameworks (Koin, Dagger, Hilt)</li>
+                <li><strong>✅ Improved Detection:</strong> More robust bytecode transformation that works regardless of where OkHttpClient.Builder is created</li>
+                <li><strong>📦 DI Patterns:</strong> Now supports DI module patterns, helper functions, and shared builders</li>
             </ul>
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.1"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.2"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! The plugin automatically adds the dependency and injects the interceptor</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
 
-            <h3>Version 1.4.0 Features (Previous)</h3>
+            <h3>Version 1.4.0-1.4.1 Features (Previous)</h3>
             <ul>
                 <li><strong>📱 Android 16KB Page Size:</strong> Full support for Android 15+ devices</li>
                 <li><strong>🔧 Gradle Plugin Auto-Injection:</strong> Automatic dependency and interceptor injection</li>
@@ -87,7 +87,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.1"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.2"</code></li>
             </ul>
         """.trimIndent()
     }
