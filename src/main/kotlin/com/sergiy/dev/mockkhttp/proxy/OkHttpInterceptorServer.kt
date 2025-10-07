@@ -27,7 +27,6 @@ class OkHttpInterceptorServer(private val project: Project) {
     private val flowStore = FlowStore.getInstance(project)
     private val mockkRulesStore = com.sergiy.dev.mockkhttp.store.MockkRulesStore.getInstance(project)
     private val globalServer = GlobalOkHttpInterceptorServer.getInstance()
-    private val gson = Gson()
 
     @Volatile
     private var isRunning = false

@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.3.9"
+version = "1.4.0"
 
 repositories {
     mavenCentral()
@@ -46,22 +46,27 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.3.9 - Multi-Project Support & Major Cleanup</h3>
+            <h3>Version 1.4.0 - Android 16KB Page Size Support & Gradle Plugin Improvements</h3>
             <ul>
-                <li><strong>🎯 Multi-Project Support:</strong> Multiple Android Studio projects can now run simultaneously without conflicts</li>
-                <li><strong>📦 Package Name Filtering:</strong> Each project only receives flows from its selected app (strict isolation)</li>
-                <li><strong>🌐 GlobalOkHttpInterceptorServer:</strong> Application-level server routes flows to correct project automatically</li>
-                <li><strong>🔧 ADB Multi-Project Fix:</strong> Handles ADB initialization when multiple projects are open</li>
-                <li><strong>🧹 Code Cleanup:</strong> Removed all legacy mitmproxy, certificate, and root access code</li>
-                <li><strong>📱 Physical Device Support:</strong> Now works on both emulators and physical devices (API 21+)</li>
-                <li><strong>⚡ Improved Stability:</strong> Better error handling and thread-safe flow routing</li>
+                <li><strong>📱 Android 16KB Page Size:</strong> Full support for devices with 16KB page size (Android 15+)</li>
+                <li><strong>🔧 Gradle Plugin Auto-Injection:</strong> Automatically injects android-library dependency (no manual setup needed)</li>
+                <li><strong>⚡ AGP 8.7.3:</strong> Updated to latest Android Gradle Plugin for better compatibility</li>
+                <li><strong>🐛 JitPack Fixes:</strong> Improved multi-module publishing and groupId consistency</li>
+                <li><strong>✨ Code Cleanup:</strong> Removed unused dependencies and improved code quality</li>
             </ul>
 
-            <h3>Important: Update Android Library</h3>
+            <h3>Important: Update Gradle Plugin</h3>
             <ul>
-                <li><strong>⚠️ REQUIRED:</strong> Update Gradle plugin to version <code>1.3.9</code> in your app</li>
-                <li>New library includes <code>packageName</code> field for proper flow routing</li>
-                <li>Without update, flows may not be routed correctly in multi-project setups</li>
+                <li><strong>⚠️ REQUIRED:</strong> Update Gradle plugin to version <code>1.4.0</code> in your app</li>
+                <li>New version includes automatic dependency injection and 16KB page size support</li>
+                <li>Compatible with Android 15+ and devices using 16KB memory pages</li>
+            </ul>
+
+            <h3>Previous Version 1.3.9 - Multi-Project Support</h3>
+            <ul>
+                <li><strong>🎯 Multi-Project Support:</strong> Multiple Android Studio projects can run simultaneously</li>
+                <li><strong>📦 Package Name Filtering:</strong> Strict project isolation with automatic flow routing</li>
+                <li><strong>🌐 GlobalOkHttpInterceptorServer:</strong> Application-level server routes flows correctly</li>
             </ul>
 
             <h3>Version 1.2.8 - Interceptor Architecture</h3>
@@ -77,7 +82,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.3.9"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.0"</code></li>
             </ul>
         """.trimIndent()
     }

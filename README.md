@@ -10,7 +10,7 @@ Intercept and modify HTTP/HTTPS traffic from Android applications in real-time
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-IntelliJ-orange.svg)](https://www.jetbrains.com/idea/)
-[![Version](https://img.shields.io/badge/version-1.2.0-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.4.0-green.svg)]()
 [![Gradle Plugin](https://img.shields.io/badge/Gradle%20Plugin-io.github.sergiydev09.mockkhttp-blue)](https://plugins.gradle.org/plugin/io.github.sergiydev09.mockkhttp)
 
 </div>
@@ -54,7 +54,7 @@ Intercept and modify HTTP/HTTPS traffic from Android applications in real-time
 git clone https://github.com/sergiydev09/MockkHttp.git
 cd MockkHttp
 ./gradlew buildPlugin
-# Install build/distributions/MockkHttp-1.2.0.zip via Settings > Plugins > Install from Disk
+# Install build/distributions/MockkHttp-1.4.0.zip via Settings > Plugins > Install from Disk
 ```
 
 ### Step 2: Add Gradle Plugin to Your App
@@ -65,12 +65,12 @@ In your app's `build.gradle.kts`:
 plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.2.0"  // Add this
+    id("io.github.sergiydev09.mockkhttp") version "1.4.0"  // Add this
 }
 
 dependencies {
     // Plugin automatically adds this, but you can specify it explicitly:
-    debugImplementation("io.github.sergiydev09:mockk-http-interceptor:1.2.0")
+    debugImplementation("com.github.sergiydev09.MockkHttp:mockk-http-interceptor:1.4.0")
 
     // Your other dependencies...
 }
@@ -181,12 +181,12 @@ The Gradle plugin scans your dependencies and **fails the build** if MockkHttp i
 ```kotlin
 // ❌ This will FAIL the build
 dependencies {
-    implementation("io.github.sergiydev09:mockk-http-interceptor:1.2.0")
+    implementation("com.github.sergiydev09.MockkHttp:mockk-http-interceptor:1.4.0")
 }
 
 // ✅ This is correct
 dependencies {
-    debugImplementation("io.github.sergiydev09:mockk-http-interceptor:1.2.0")
+    debugImplementation("com.github.sergiydev09.MockkHttp:mockk-http-interceptor:1.4.0")
 }
 ```
 
@@ -523,7 +523,7 @@ pluginManagement {
 
 # In your test app's build.gradle.kts:
 plugins {
-    id("io.github.sergiydev09.mockkhttp") version "1.2.0"
+    id("io.github.sergiydev09.mockkhttp") version "1.4.0"
 }
 ```
 
