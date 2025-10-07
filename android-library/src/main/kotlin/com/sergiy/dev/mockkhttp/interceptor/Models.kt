@@ -8,7 +8,9 @@ data class FlowData(
     val request: RequestData,
     val response: ResponseData,
     val timestamp: Long,
-    val duration: Long
+    val duration: Long,
+    val projectId: String? = null,      // Optional: helps route to correct project
+    val packageName: String? = null     // Optional: app package name for routing
 )
 
 /**

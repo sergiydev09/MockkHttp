@@ -499,6 +499,14 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 try {
                     logger.info("🔌 Starting ${mode.name} Mode...")
 
+                    // Get package name filter from selected app
+                    val packageNameFilter = selectedApp?.packageName
+                    if (packageNameFilter != null) {
+                        logger.info("📦 Filtering flows by package: $packageNameFilter")
+                    } else {
+                        logger.warn("⚠️  No app selected, will receive ALL flows from all apps")
+                    }
+
                     // Map mode to OkHttpInterceptorServer.Mode
                     val serverMode = when (mode) {
                         Mode.RECORDING -> OkHttpInterceptorServer.Mode.RECORDING
@@ -507,8 +515,8 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         Mode.STOPPED -> throw Exception("Cannot start in STOPPED mode")
                     }
 
-                    // Start OkHttpInterceptorServer with the selected mode
-                    if (!okHttpInterceptorServer.start(serverMode)) {
+                    // Start OkHttpInterceptorServer with the selected mode and package filter
+                    if (!okHttpInterceptorServer.start(serverMode, packageNameFilter)) {
                         throw Exception("Failed to start OkHttp Interceptor Server")
                     }
 

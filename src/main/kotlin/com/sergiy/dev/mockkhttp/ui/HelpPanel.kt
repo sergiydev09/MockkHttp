@@ -107,6 +107,17 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
             <body>
                 <h1>🚀 MockkHttp Setup Guide</h1>
 
+                <div class="note">
+                    <strong>⚠️ IMPORTANT - Version 1.3.9 Update Required</strong>
+                    <p>
+                        This version (1.3.9) includes critical multi-project support and package filtering improvements.
+                        <strong>You MUST update your Gradle plugin to version 1.3.9</strong> for proper functionality.
+                    </p>
+                    <p>
+                        Without the update, flows may not be routed correctly when multiple projects are open.
+                    </p>
+                </div>
+
                 <p>
                     MockkHttp uses an OkHttp Interceptor to capture network traffic from your Android app.
                     Follow these steps to integrate it into your project.
@@ -119,7 +130,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     <pre>plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.2.8"  // Add this
+    id("io.github.sergiydev09.mockkhttp") version "1.3.9"  // ⚠️ Update to 1.3.9!
 }</pre>
                     <p><em>That's it! The plugin automatically adds the interceptor dependency and injects it into OkHttpClient instances.</em></p>
                 </div>
@@ -204,7 +215,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
                 <br/><br/>
                 <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.2.8 | Built for Android Development
+                    MockkHttp v1.3.9 | Multi-Project Support | Built for Android Development
                 </p>
             </body>
             </html>

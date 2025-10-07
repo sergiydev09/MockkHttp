@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.3.3"
+version = "1.3.9"
 
 repositories {
     mavenCentral()
@@ -46,41 +46,38 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.2.8 - Interceptor Architecture & Security Hardening</h3>
+            <h3>Version 1.3.9 - Multi-Project Support & Major Cleanup</h3>
             <ul>
-                <li><strong>🚀 New Architecture:</strong> Switched from mitmproxy to OkHttp Interceptor for simpler, more reliable operation</li>
-                <li><strong>⚡ Zero Configuration:</strong> No proxy setup, no certificates, no iptables - just add Gradle plugin and go!</li>
-                <li><strong>🔒 Production Safety:</strong> 4-layer security system prevents accidental inclusion in release builds</li>
-                <li><strong>💉 Automatic Injection:</strong> Gradle plugin automatically injects interceptor via bytecode transformation</li>
-                <li><strong>🐛 Debug Mode Enhanced:</strong> Visual indicator for modified responses with [DEBUG: Modified] tag in cyan</li>
-                <li><strong>🍎 Cross-Platform:</strong> Works on macOS, Windows, and Linux (no longer Mac-only)</li>
-                <li><strong>📱 API 21+ Support:</strong> Compatible with Android 5.0+ emulators</li>
-                <li><strong>🎨 Theme Support:</strong> Help panel now adapts to IDE light/dark themes</li>
+                <li><strong>🎯 Multi-Project Support:</strong> Multiple Android Studio projects can now run simultaneously without conflicts</li>
+                <li><strong>📦 Package Name Filtering:</strong> Each project only receives flows from its selected app (strict isolation)</li>
+                <li><strong>🌐 GlobalOkHttpInterceptorServer:</strong> Application-level server routes flows to correct project automatically</li>
+                <li><strong>🔧 ADB Multi-Project Fix:</strong> Handles ADB initialization when multiple projects are open</li>
+                <li><strong>🧹 Code Cleanup:</strong> Removed all legacy mitmproxy, certificate, and root access code</li>
+                <li><strong>📱 Physical Device Support:</strong> Now works on both emulators and physical devices (API 21+)</li>
+                <li><strong>⚡ Improved Stability:</strong> Better error handling and thread-safe flow routing</li>
             </ul>
 
-            <h3>Breaking Changes:</h3>
+            <h3>Important: Update Android Library</h3>
             <ul>
-                <li>Removed mitmproxy dependency - no longer required!</li>
-                <li>Removed certificate installation step - no longer needed!</li>
-                <li>New Gradle plugin ID: <code>io.github.sergiydev09.mockkhttp</code></li>
-                <li>Setup now requires adding Gradle plugin to your app</li>
+                <li><strong>⚠️ REQUIRED:</strong> Update Gradle plugin to version <code>1.3.9</code> in your app</li>
+                <li>New library includes <code>packageName</code> field for proper flow routing</li>
+                <li>Without update, flows may not be routed correctly in multi-project setups</li>
             </ul>
 
-            <h3>Version 1.0.3 - Initial Release (Proxy Architecture)</h3>
+            <h3>Version 1.2.8 - Interceptor Architecture</h3>
             <ul>
-                <li><strong>Three Operation Modes:</strong> Recording, Debug, and Mockk modes</li>
-                <li><strong>mitmproxy Integration:</strong> Python addon for traffic interception</li>
-                <li><strong>Certificate Management:</strong> Automatic mitmproxy CA certificate installation</li>
-                <li><strong>App-Level Filtering:</strong> iptables-based traffic filtering</li>
-                <li><strong>Mock Rule Management:</strong> Create and apply mock responses</li>
+                <li><strong>🚀 New Architecture:</strong> Switched from mitmproxy to OkHttp Interceptor</li>
+                <li><strong>⚡ Zero Configuration:</strong> No proxy setup, no certificates needed</li>
+                <li><strong>🔒 Production Safety:</strong> 4-layer security system prevents release inclusion</li>
+                <li><strong>💉 Automatic Injection:</strong> Gradle plugin auto-injects interceptor</li>
             </ul>
 
-            <h4>Requirements:</h4>
+            <h3>Requirements:</h3>
             <ul>
                 <li>Android SDK with platform-tools (ADB)</li>
-                <li>Android emulator API 21+</li>
+                <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li>Add Gradle plugin: <code>id("io.github.sergiydev09.mockkhttp") version "1.2.0"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.3.9"</code></li>
             </ul>
         """.trimIndent()
     }

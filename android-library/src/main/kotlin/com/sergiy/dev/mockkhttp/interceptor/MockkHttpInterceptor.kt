@@ -335,7 +335,9 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                 body = responseBodyString
             ),
             timestamp = System.currentTimeMillis(),
-            duration = duration
+            duration = duration,
+            projectId = null,  // Will be set by Gradle plugin injection
+            packageName = appContext?.packageName  // Include package name for routing
         )
     }
 
