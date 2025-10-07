@@ -71,9 +71,10 @@ class GlobalOkHttpInterceptorServer {
      * Intercept mode for a project.
      */
     enum class InterceptMode {
-        RECORDING,  // Just capture, don't pause
-        DEBUG,      // Pause and show dialog
-        MOCKK       // Auto-apply mock rules
+        RECORDING,    // Just capture, don't pause
+        DEBUG,        // Pause and show dialog
+        MOCKK,        // Auto-apply mock rules
+        MOCKK_DEBUG   // Apply mock THEN pause for editing
     }
 
     /**
@@ -254,6 +255,26 @@ class GlobalOkHttpInterceptorServer {
             logger.info("🔄 Updated project mode: ${project.name} -> $newMode")
         } else {
             logger.warn("⚠️ Cannot update mode for unregistered project: ${project.name}")
+        }
+    }
+
+    /**
+     * Update package name filter for a registered project.
+     */
+    fun updateProjectPackageFilter(project: Project, packageNameFilter: String?) {
+        val projectId = project.locationHash
+        val registration = registeredProjects[projectId]
+
+        if (registration != null) {
+            val updated = registration.copy(packageNameFilter = packageNameFilter)
+            registeredProjects[projectId] = updated
+            if (packageNameFilter != null) {
+                logger.info("🔄 Updated package filter: ${project.name} -> $packageNameFilter")
+            } else {
+                logger.info("🔄 Removed package filter: ${project.name} (will receive ALL flows)")
+            }
+        } else {
+            logger.warn("⚠️ Cannot update package filter for unregistered project: ${project.name}")
         }
     }
 

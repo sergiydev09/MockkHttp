@@ -24,9 +24,12 @@ import com.sergiy.dev.mockkhttp.model.MatchType
 class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesStore.State> {
 
     private val logger = MockkHttpLogger.getInstance(project)
+    private val collections = mutableMapOf<String, com.sergiy.dev.mockkhttp.model.MockkCollection>()
     private val rules = mutableListOf<MockkRule>()
     private val ruleAddedListeners = mutableListOf<(MockkRule) -> Unit>()
     private val ruleRemovedListeners = mutableListOf<(MockkRule) -> Unit>()
+    private val collectionAddedListeners = mutableListOf<(com.sergiy.dev.mockkhttp.model.MockkCollection) -> Unit>()
+    private val collectionRemovedListeners = mutableListOf<(com.sergiy.dev.mockkhttp.model.MockkCollection) -> Unit>()
 
     companion object {
         fun getInstance(project: Project): MockkRulesStore {
@@ -38,17 +41,67 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
      * State for persistence.
      */
     data class State(
+        var collections: MutableList<com.sergiy.dev.mockkhttp.model.MockkCollection> = mutableListOf(),
         var rules: MutableList<MockkRule> = mutableListOf()
     )
 
     override fun getState(): State {
-        return State(rules = rules.toMutableList())
+        return State(
+            collections = collections.values.toMutableList(),
+            rules = rules.toMutableList()
+        )
     }
 
     override fun loadState(state: State) {
+        collections.clear()
         rules.clear()
+
+        // Load collections
+        state.collections.forEach { collection ->
+            collections[collection.id] = collection
+        }
+
+        // Load rules
         rules.addAll(state.rules)
-        logger.info("📚 Loaded ${rules.size} mock rules from storage")
+
+        // Migrate old rules without collectionId to "Default" collection
+        migrateOldRulesToDefaultCollection()
+
+        logger.info("📚 Loaded ${collections.size} collection(s) and ${rules.size} mock rule(s) from storage")
+    }
+
+    /**
+     * Migrates rules that don't have a collectionId to a "Default" collection.
+     * This ensures backward compatibility with rules created before collections were introduced.
+     */
+    private fun migrateOldRulesToDefaultCollection() {
+        val rulesWithoutCollection = rules.filter { it.collectionId.isEmpty() }
+
+        if (rulesWithoutCollection.isNotEmpty()) {
+            logger.info("🔄 Migrating ${rulesWithoutCollection.size} old rule(s) to Default collection")
+
+            // Find or create "Default" collection
+            val defaultCollection = collections.values.find { it.name == "Default" }
+                ?: run {
+                    val newDefault = com.sergiy.dev.mockkhttp.model.MockkCollection(
+                        id = "collection_default_" + System.currentTimeMillis(),
+                        name = "Default",
+                        packageName = "",
+                        description = "Migrated from previous version",
+                        enabled = true
+                    )
+                    collections[newDefault.id] = newDefault
+                    logger.info("✨ Created Default collection for migrated rules")
+                    newDefault
+                }
+
+            // Assign collection to old rules
+            rulesWithoutCollection.forEach { rule ->
+                rule.collectionId = defaultCollection.id
+            }
+
+            logger.info("✅ Migration complete: ${rulesWithoutCollection.size} rule(s) migrated")
+        }
     }
 
     /**
@@ -58,13 +111,15 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         name: String,
         method: String,
         structuredUrl: StructuredUrl,
-        mockResponse: ModifiedResponseData
+        mockResponse: ModifiedResponseData,
+        collectionId: String = ""
     ): MockkRule {
         val rule = MockkRule(
-            id = System.currentTimeMillis().toString(),
+            id = "rule_" + System.currentTimeMillis(),
             name = name,
             enabled = true,
             method = method,
+            collectionId = collectionId,
             scheme = structuredUrl.scheme,
             host = structuredUrl.host,
             port = structuredUrl.port,
@@ -76,12 +131,139 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         )
 
         rules.add(rule)
-        logger.info("➕ Added mock rule: $name")
+        logger.info("➕ Added mock rule: $name to collection: $collectionId")
 
         // Notify listeners
         ruleAddedListeners.forEach { it(rule) }
 
         return rule
+    }
+
+    // ========== COLLECTION METHODS ==========
+
+    /**
+     * Add a new collection.
+     */
+    fun addCollection(
+        name: String,
+        packageName: String,
+        description: String = ""
+    ): com.sergiy.dev.mockkhttp.model.MockkCollection {
+        val collection = com.sergiy.dev.mockkhttp.model.MockkCollection(
+            id = "collection_" + System.currentTimeMillis(),
+            name = name,
+            packageName = packageName,
+            description = description,
+            enabled = true
+        )
+
+        collections[collection.id] = collection
+        logger.info("📁 Added collection: $name (package: $packageName)")
+
+        // Notify listeners
+        collectionAddedListeners.forEach { it(collection) }
+
+        return collection
+    }
+
+    /**
+     * Remove a collection and optionally its rules.
+     */
+    fun removeCollection(collection: com.sergiy.dev.mockkhttp.model.MockkCollection, removeRules: Boolean = true) {
+        collections.remove(collection.id)
+        logger.info("🗑️ Removed collection: ${collection.name}")
+
+        if (removeRules) {
+            val rulesToRemove = rules.filter { it.collectionId == collection.id }
+            rulesToRemove.forEach { rule ->
+                rules.remove(rule)
+                ruleRemovedListeners.forEach { listener -> listener(rule) }
+            }
+            logger.info("   Also removed ${rulesToRemove.size} rule(s)")
+        }
+
+        // Notify listeners
+        collectionRemovedListeners.forEach { it(collection) }
+    }
+
+    /**
+     * Get all collections.
+     */
+    fun getAllCollections(): List<com.sergiy.dev.mockkhttp.model.MockkCollection> {
+        return collections.values.toList()
+    }
+
+    /**
+     * Get collections by package name.
+     */
+    fun getCollectionsByPackage(packageName: String): List<com.sergiy.dev.mockkhttp.model.MockkCollection> {
+        return collections.values.filter { it.packageName == packageName }
+    }
+
+    /**
+     * Get a collection by ID.
+     */
+    fun getCollection(collectionId: String): com.sergiy.dev.mockkhttp.model.MockkCollection? {
+        return collections[collectionId]
+    }
+
+    /**
+     * Get rules in a specific collection.
+     */
+    fun getRulesInCollection(collectionId: String): List<MockkRule> {
+        return rules.filter { it.collectionId == collectionId }
+    }
+
+    /**
+     * Move a rule to a different collection.
+     */
+    fun moveRule(rule: MockkRule, targetCollectionId: String) {
+        rule.collectionId = targetCollectionId
+        logger.info("📦 Moved rule '${rule.name}' to collection: $targetCollectionId")
+    }
+
+    /**
+     * Duplicate a rule into a target collection.
+     */
+    fun duplicateRule(rule: MockkRule, targetCollectionId: String): MockkRule {
+        val duplicated = rule.copy(
+            id = "rule_" + System.currentTimeMillis(),
+            collectionId = targetCollectionId
+        )
+        rules.add(duplicated)
+        logger.info("📋 Duplicated rule '${rule.name}' to collection: $targetCollectionId")
+
+        // Notify listeners
+        ruleAddedListeners.forEach { it(duplicated) }
+
+        return duplicated
+    }
+
+    /**
+     * Update collection properties.
+     */
+    fun updateCollection(collectionId: String, name: String? = null, description: String? = null, enabled: Boolean? = null) {
+        val collection = collections[collectionId] ?: return
+
+        name?.let { collection.name = it }
+        description?.let { collection.description = it }
+        enabled?.let { collection.enabled = it }
+
+        logger.info("🔄 Updated collection: ${collection.name}")
+    }
+
+    /**
+     * Add listener for when a collection is added.
+     */
+    fun addCollectionAddedListener(listener: (com.sergiy.dev.mockkhttp.model.MockkCollection) -> Unit) {
+        collectionAddedListeners.add(listener)
+    }
+
+    /**
+     * Add listener for when a collection is removed.
+     */
+    fun addCollectionRemovedListener(listener: (com.sergiy.dev.mockkhttp.model.MockkCollection) -> Unit) {
+        collectionRemovedListeners.add(listener)
     }
 
     /**
@@ -111,6 +293,7 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
 
     /**
      * Find a matching rule for a given request using structured matching.
+     * Only searches in enabled collections.
      * Returns the actual MockkRule if a match is found.
      */
     fun findMatchingRuleObject(method: String, host: String, path: String, queryParams: Map<String, String>): MockkRule? {
@@ -119,14 +302,25 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         logger.debug("   Host: $host")
         logger.debug("   Path: $path")
         logger.debug("   Query Params: $queryParams")
-        logger.debug("🔍 Available rules: ${rules.size}")
+
+        // Get enabled collections
+        val enabledCollections = collections.values.filter { it.enabled }
+        logger.debug("🔍 Searching in ${enabledCollections.size} enabled collection(s)")
 
         // Find matching rule without verbose logging
         for ((index, rule) in rules.withIndex()) {
+            // Skip if rule not enabled
             if (!rule.enabled) {
                 continue
             }
 
+            // Skip if rule's collection is disabled
+            val ruleCollection = collections[rule.collectionId]
+            if (ruleCollection == null || !ruleCollection.enabled) {
+                continue
+            }
+
+            // Skip if method doesn't match
             if (!rule.method.equals(method, ignoreCase = true)) {
                 continue
             }
@@ -136,7 +330,7 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
 
             if (matches) {
                 // Only log the winning rule
-                logger.debug("  ✅ Rule $index: ${rule.name}")
+                logger.debug("  ✅ Rule $index: ${rule.name} (Collection: ${ruleCollection.name})")
                 logger.debug("     Method: ${rule.method}, Host: ${rule.host}, Path: ${rule.path}")
                 logger.debug("     Query Params: ${rule.queryParams.map { "${it.key}=${it.value}" }}")
                 logger.debug("✅ MATCHED!")
@@ -144,9 +338,14 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
             }
         }
 
-        // No match found - log all checked rules
+        // No match found - log stats
+        val eligibleRules = rules.count { rule ->
+            rule.enabled &&
+            rule.method.equals(method, ignoreCase = true) &&
+            collections[rule.collectionId]?.enabled == true
+        }
         logger.debug("❌ No matching rule found")
-        logger.debug("   Checked ${rules.count { it.enabled && it.method.equals(method, ignoreCase = true) }} enabled rule(s)")
+        logger.debug("   Checked $eligibleRules eligible rule(s)")
         return null
     }
 
@@ -273,6 +472,146 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         ruleRemovedListeners.add(listener)
     }
 
+    // ========== IMPORT/EXPORT METHODS ==========
+
+    /**
+     * Export a single collection to JSON string.
+     */
+    fun exportCollection(collection: com.sergiy.dev.mockkhttp.model.MockkCollection): String {
+        return exportCollections(listOf(collection))
+    }
+
+    /**
+     * Export multiple collections to JSON string.
+     */
+    fun exportCollections(collectionsToExport: List<com.sergiy.dev.mockkhttp.model.MockkCollection>): String {
+        val gson = com.google.gson.GsonBuilder().setPrettyPrinting().create()
+
+        val collectionsData = collectionsToExport.map { collection ->
+            val collectionRules = getRulesInCollection(collection.id)
+            val rulesData = collectionRules.map { rule ->
+                com.sergiy.dev.mockkhttp.model.MockkRuleData(
+                    id = rule.id,
+                    name = rule.name,
+                    enabled = rule.enabled,
+                    method = rule.method,
+                    scheme = rule.scheme,
+                    host = rule.host,
+                    port = rule.port,
+                    path = rule.path,
+                    queryParams = rule.queryParams.toMutableList(),
+                    statusCode = rule.statusCode,
+                    headers = rule.headers,
+                    content = rule.content
+                )
+            }
+
+            com.sergiy.dev.mockkhttp.model.MockkCollectionData(
+                collection = collection,
+                rules = rulesData
+            )
+        }
+
+        val exportData = com.sergiy.dev.mockkhttp.model.MockkCollectionExport(
+            collections = collectionsData
+        )
+
+        logger.info("📤 Exported ${collectionsToExport.size} collection(s)")
+        return gson.toJson(exportData)
+    }
+
+    /**
+     * Import collections from JSON string.
+     * Returns the list of imported collections.
+     */
+    fun importCollections(json: String, targetPackageName: String? = null, renameOnConflict: Boolean = true): List<com.sergiy.dev.mockkhttp.model.MockkCollection> {
+        try {
+            val gson = com.google.gson.Gson()
+            val exportData = gson.fromJson(json, com.sergiy.dev.mockkhttp.model.MockkCollectionExport::class.java)
+
+            logger.info("📥 Importing ${exportData.collections.size} collection(s) from JSON")
+            logger.info("   Plugin version: ${exportData.pluginVersion}")
+            logger.info("   Export date: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(java.util.Date(exportData.exportDate))}")
+
+            val importedCollections = mutableListOf<com.sergiy.dev.mockkhttp.model.MockkCollection>()
+
+            for (collectionData in exportData.collections) {
+                var collection = collectionData.collection
+
+                // Override package name if specified
+                if (targetPackageName != null) {
+                    collection.packageName = targetPackageName
+                }
+
+                // Check for name conflicts
+                val existingCollection = collections.values.find { it.name == collection.name }
+                if (existingCollection != null && renameOnConflict) {
+                    var counter = 2
+                    var newName = "${collection.name} (Imported)"
+                    while (collections.values.any { it.name == newName }) {
+                        newName = "${collection.name} (Imported $counter)"
+                        counter++
+                    }
+                    logger.info("   ⚠️  Name conflict detected: renaming '${collection.name}' to '$newName'")
+                    collection.name = newName
+                }
+
+                // Generate new ID
+                val newCollectionId = "collection_" + System.currentTimeMillis() + "_" + (Math.random() * 1000000).toInt().toString(36)
+                collection.id = newCollectionId
+
+                // Add collection
+                collections[newCollectionId] = collection
+                importedCollections.add(collection)
+
+                // Import rules
+                for (ruleData in collectionData.rules) {
+                    val newRuleId = "rule_" + System.currentTimeMillis() + "_" + (Math.random() * 1000000).toInt().toString(36)
+                    val rule = MockkRule(
+                        id = newRuleId,
+                        name = ruleData.name,
+                        enabled = ruleData.enabled,
+                        method = ruleData.method,
+                        collectionId = newCollectionId,
+                        scheme = ruleData.scheme,
+                        host = ruleData.host,
+                        port = ruleData.port,
+                        path = ruleData.path,
+                        queryParams = ruleData.queryParams,
+                        statusCode = ruleData.statusCode,
+                        headers = ruleData.headers,
+                        content = ruleData.content
+                    )
+
+                    rules.add(rule)
+
+                    // Notify listeners for each rule
+                    ruleAddedListeners.forEach { listener -> listener(rule) }
+                }
+
+                logger.info("   ✅ Imported collection '${collection.name}' with ${collectionData.rules.size} rule(s)")
+
+                // Notify listeners for collection
+                collectionAddedListeners.forEach { it(collection) }
+            }
+
+            logger.info("✅ Import complete: ${importedCollections.size} collection(s), total ${exportData.collections.sumOf { it.rules.size }} rule(s)")
+            return importedCollections
+
+        } catch (e: Exception) {
+            logger.error("Failed to import collections from JSON", e)
+            throw IllegalArgumentException("Failed to parse JSON: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Import a single collection from JSON string.
+     */
+    fun importCollection(json: String, targetPackageName: String? = null, renameOnConflict: Boolean = true): com.sergiy.dev.mockkhttp.model.MockkCollection? {
+        val imported = importCollections(json, targetPackageName, renameOnConflict)
+        return imported.firstOrNull()
+    }
+
     /**
      * Data class representing a Mockk rule.
      * All properties are var with defaults for XML serialization.
@@ -282,6 +621,7 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         var name: String = "",
         var enabled: Boolean = true,
         var method: String = "",
+        var collectionId: String = "",  // NEW: Collection this rule belongs to
 
         // Structured URL format
         var scheme: String = "https",

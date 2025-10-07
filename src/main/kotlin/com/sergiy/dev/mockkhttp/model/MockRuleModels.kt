@@ -20,6 +20,54 @@ enum class MatchType {
 }
 
 /**
+ * Represents a collection of mock rules grouped by app/environment
+ */
+data class MockkCollection(
+    var id: String = "",
+    var name: String = "",
+    var packageName: String = "",  // Associated app package
+    var description: String = "",  // Optional description
+    var enabled: Boolean = true,
+    var createdAt: Long = System.currentTimeMillis(),
+    var version: String = "1.3.9"  // Plugin version when created
+)
+
+/**
+ * Format for exporting/importing collections
+ */
+data class MockkCollectionExport(
+    val pluginVersion: String = "1.3.9",
+    val exportDate: Long = System.currentTimeMillis(),
+    val collections: List<MockkCollectionData> = emptyList()
+)
+
+/**
+ * Collection data for export (includes rules)
+ */
+data class MockkCollectionData(
+    val collection: MockkCollection,
+    val rules: List<MockkRuleData>
+)
+
+/**
+ * Rule data for export (simplified from MockkRulesStore.MockkRule)
+ */
+data class MockkRuleData(
+    var id: String = "",
+    var name: String = "",
+    var enabled: Boolean = true,
+    var method: String = "",
+    var scheme: String = "https",
+    var host: String = "",
+    var port: Int? = null,
+    var path: String = "",
+    var queryParams: MutableList<QueryParam> = mutableListOf(),
+    var statusCode: Int = 200,
+    var headers: Map<String, String> = emptyMap(),
+    var content: String = ""
+)
+
+/**
  * Represents a structured URL for matching
  */
 data class StructuredUrl(

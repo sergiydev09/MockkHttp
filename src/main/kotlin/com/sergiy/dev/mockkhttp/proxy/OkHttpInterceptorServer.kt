@@ -36,9 +36,10 @@ class OkHttpInterceptorServer(private val project: Project) {
     private var currentMode = Mode.RECORDING
 
     enum class Mode {
-        RECORDING,  // Just capture, don't pause
-        DEBUG,      // Pause and show dialog
-        MOCKK       // Auto-apply mock rules
+        RECORDING,    // Just capture, don't pause
+        DEBUG,        // Pause and show dialog
+        MOCKK,        // Auto-apply mock rules
+        MOCKK_DEBUG   // Apply mock THEN pause for editing
     }
 
     companion object {
@@ -73,6 +74,7 @@ class OkHttpInterceptorServer(private val project: Project) {
             Mode.RECORDING -> GlobalOkHttpInterceptorServer.InterceptMode.RECORDING
             Mode.DEBUG -> GlobalOkHttpInterceptorServer.InterceptMode.DEBUG
             Mode.MOCKK -> GlobalOkHttpInterceptorServer.InterceptMode.MOCKK
+            Mode.MOCKK_DEBUG -> GlobalOkHttpInterceptorServer.InterceptMode.MOCKK_DEBUG
         }
 
         // Register with global server WITH PACKAGE FILTER
@@ -124,8 +126,23 @@ class OkHttpInterceptorServer(private val project: Project) {
                 Mode.RECORDING -> GlobalOkHttpInterceptorServer.InterceptMode.RECORDING
                 Mode.DEBUG -> GlobalOkHttpInterceptorServer.InterceptMode.DEBUG
                 Mode.MOCKK -> GlobalOkHttpInterceptorServer.InterceptMode.MOCKK
+                Mode.MOCKK_DEBUG -> GlobalOkHttpInterceptorServer.InterceptMode.MOCKK_DEBUG
             }
             globalServer.updateProjectMode(project, interceptMode)
+        }
+    }
+
+    /**
+     * Change package name filter dynamically.
+     */
+    fun setPackageNameFilter(packageNameFilter: String?) {
+        if (isRunning) {
+            globalServer.updateProjectPackageFilter(project, packageNameFilter)
+            if (packageNameFilter != null) {
+                logger.info("🔄 Package filter changed to: $packageNameFilter")
+            } else {
+                logger.info("🔄 Package filter removed (will receive ALL flows)")
+            }
         }
     }
 
@@ -160,15 +177,10 @@ class OkHttpInterceptorServer(private val project: Project) {
                 // Debug mode: show dialog and wait for user
                 logger.info("⏸️  Flow paused, waiting for user input...")
                 flowStore.addFlow(httpFlowData)
-                val modifiedResponse = showInterceptDialogAndWait(httpFlowData)
+                val (modifiedResponse, userModified) = showInterceptDialogAndWait(httpFlowData)
 
-                // Check if response was actually modified
-                val wasModified = modifiedResponse.statusCode != null ||
-                                modifiedResponse.headers != null ||
-                                modifiedResponse.body != null
-
-                // If modified, update the flow in store with modified flag
-                if (wasModified) {
+                // If user actually modified the response, update the flow in store with modified flag
+                if (userModified) {
                     val modifiedFlow = httpFlowData.copy(modified = true)
                     flowStore.addFlow(modifiedFlow)
                     logger.info("✏️  Response was modified by user")
@@ -207,15 +219,59 @@ class OkHttpInterceptorServer(private val project: Project) {
                     ModifiedResponseData.original()
                 }
             }
+
+            Mode.MOCKK_DEBUG -> {
+                // Mockk Debug mode: apply mock THEN pause for editing
+                logger.debug("🎭 Mockk Debug mode: checking for matching rules...")
+                val matchingRule = findMatchingMockRule(httpFlowData)
+
+                // Create flow with mock applied (if found)
+                val flowWithMock = if (matchingRule != null) {
+                    logger.info("✅ Found matching mock rule: ${matchingRule.name}")
+                    // Update the flow's response to show the mocked response
+                    httpFlowData.copy(
+                        response = httpFlowData.response?.copy(
+                            statusCode = matchingRule.statusCode,
+                            headers = matchingRule.headers,
+                            content = matchingRule.content
+                        ),
+                        mockApplied = true,
+                        mockRuleName = matchingRule.name,
+                        mockRuleId = matchingRule.id
+                    )
+                } else {
+                    logger.debug("📝 No matching mock rule, will pause with original")
+                    httpFlowData
+                }
+
+                // Add flow to store (with mock if found)
+                flowStore.addFlow(flowWithMock)
+
+                // NOW pause and show dialog for user editing
+                logger.info("⏸️  Flow paused (with mock applied), waiting for user input...")
+                val (modifiedResponse, userModified) = showInterceptDialogAndWait(flowWithMock)
+
+                // If user actually modified, update the flow with modified flag too
+                if (userModified) {
+                    val modifiedFlow = flowWithMock.copy(modified = true)
+                    flowStore.addFlow(modifiedFlow)
+                    logger.info("✏️  Response was further modified by user")
+                }
+
+                logger.info("✅ Response sent back to app")
+                modifiedResponse
+            }
         }
     }
 
     /**
      * Show intercept dialog and WAIT for user response (blocks thread).
+     * Returns Pair<ModifiedResponseData, Boolean> where Boolean indicates if user manually modified the response.
      */
-    private fun showInterceptDialogAndWait(flowData: HttpFlowData): ModifiedResponseData {
+    private fun showInterceptDialogAndWait(flowData: HttpFlowData): Pair<ModifiedResponseData, Boolean> {
         val latch = CountDownLatch(1)
         var result: ModifiedResponseData? = null
+        var userModified = false
 
         SwingUtilities.invokeLater {
             try {
@@ -223,24 +279,58 @@ class OkHttpInterceptorServer(private val project: Project) {
                 if (dialog.showAndGet()) {
                     val modified = dialog.getModifiedResponse()
                     if (modified != null) {
+                        // User explicitly modified the response (pressed "Continue with Modified Response")
                         result = ModifiedResponseData(
                             statusCode = modified.statusCode,
                             headers = modified.headers,
                             body = modified.content
                         )
+                        userModified = true  // USER MADE CHANGES
                         logger.debug("User modified response")
+                    } else if (flowData.mockApplied) {
+                        // User pressed "Continue with Mockk Response" WITHOUT editing - return the mocked response
+                        result = ModifiedResponseData(
+                            statusCode = flowData.response?.statusCode,
+                            headers = flowData.response?.headers,
+                            body = flowData.response?.content
+                        )
+                        userModified = false  // NO USER CHANGES, just using mock
+                        logger.debug("Continuing with mocked response (not edited)")
                     } else {
+                        // User pressed "Continue with Remote Response" - return original
                         result = ModifiedResponseData.original()
+                        userModified = false  // NO USER CHANGES
                         logger.debug("No modifications, using original response")
+                    }
+
+                    // Check if user wants to save as mock rule
+                    if (dialog.shouldSaveAsMock()) {
+                        val collection = dialog.getSelectedCollection()
+                        if (collection != null) {
+                            val responseToSave = if (modified != null) {
+                                modified
+                            } else {
+                                com.sergiy.dev.mockkhttp.model.ModifiedResponseData(
+                                    statusCode = flowData.response?.statusCode,
+                                    headers = flowData.response?.headers,
+                                    content = flowData.response?.content
+                                )
+                            }
+                            saveMockRuleFromDialog(flowData, dialog, responseToSave, collection)
+                        } else {
+                            logger.warn("⚠️  Cannot save mock: no collection selected")
+                        }
                     }
                 } else {
                     // User cancelled, use original
                     result = ModifiedResponseData.original()
+                    userModified = false
                     logger.debug("User cancelled, using original response")
                 }
             } catch (e: Exception) {
                 logger.error("Error in intercept dialog", e)
                 result = ModifiedResponseData.original()
+                userModified = false
             } finally {
                 latch.countDown()
             }
@@ -250,10 +340,41 @@ class OkHttpInterceptorServer(private val project: Project) {
         val completed = latch.await(5, TimeUnit.MINUTES)
         if (!completed) {
             logger.warn("⚠️  Timeout waiting for user input, using original response")
-            return ModifiedResponseData.original()
+            return Pair(ModifiedResponseData.original(), false)
         }
 
-        return result ?: ModifiedResponseData.original()
+        return Pair(result ?: ModifiedResponseData.original(), userModified)
+    }
+
+    /**
+     * Save a mock rule from the debug intercept dialog.
+     */
+    private fun saveMockRuleFromDialog(
+        flowData: HttpFlowData,
+        dialog: DebugInterceptDialog,
+        response: com.sergiy.dev.mockkhttp.model.ModifiedResponseData,
+        collection: com.sergiy.dev.mockkhttp.model.MockkCollection
+    ) {
+        try {
+            val ruleName = dialog.getMockRuleName()
+            val structuredUrl = com.sergiy.dev.mockkhttp.model.StructuredUrl.fromUrl(flowData.request.url)
+
+            mockkRulesStore.addRule(
+                name = ruleName,
+                method = flowData.request.method,
+                structuredUrl = structuredUrl,
+                mockResponse = com.sergiy.dev.mockkhttp.model.ModifiedResponseData(
+                    statusCode = response.statusCode ?: flowData.response?.statusCode ?: 200,
+                    headers = response.headers ?: flowData.response?.headers ?: emptyMap(),
+                    content = response.content ?: flowData.response?.content ?: ""
+                ),
+                collectionId = collection.id
+            )
+
+            logger.info("✅ Saved mock rule '$ruleName' to collection '${collection.name}'")
+        } catch (e: Exception) {
+            logger.error("Failed to save mock rule", e)
+        }
     }
 
     /**
@@ -264,6 +385,12 @@ class OkHttpInterceptorServer(private val project: Project) {
 
         for (rule in allRules) {
             if (!rule.enabled) continue
+
+            // Skip if rule's collection is disabled
+            val ruleCollection = mockkRulesStore.getCollection(rule.collectionId)
+            if (ruleCollection == null || !ruleCollection.enabled) {
+                continue
+            }
 
             // Match method
             if (rule.method != flowData.request.method) continue
@@ -331,7 +458,7 @@ class OkHttpInterceptorServer(private val project: Project) {
 
         return HttpFlowData(
             flowId = androidFlow.flowId,
-            paused = (currentMode == Mode.DEBUG),
+            paused = (currentMode == Mode.DEBUG || currentMode == Mode.MOCKK_DEBUG),
             request = HttpRequestData(
                 method = androidFlow.request.method,
                 url = url,

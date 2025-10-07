@@ -9,6 +9,7 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.adb.*
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
@@ -36,25 +37,31 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val emulatorComboBox: ComboBox<EmulatorInfo>
     private val appComboBox: ComboBox<AppInfo>
     private val refreshAppsButton: JButton
-    private val recordingButton: JToggleButton
-    private val debugButton: JToggleButton
-    private val mockkButton: JToggleButton
+    private val recordingRadio: JRadioButton
+    private val mockkRadio: JRadioButton
+    private val modeButtonGroup: ButtonGroup
+    private val debugCheckbox: JCheckBox
+    private val startStopButton: JButton
     private val clearButton: JButton
     private val exportButton: JButton
     private val statusLabel: JLabel
+    private val searchField: JBTextField
     private val flowListModel: DefaultListModel<HttpFlowData>
     private val flowList: JBList<HttpFlowData>
+    private val allFlows = mutableListOf<HttpFlowData>() // Keep all flows for filtering
 
     // State
     private var selectedEmulator: EmulatorInfo? = null
     private var selectedApp: AppInfo? = null
     private var currentMode: Mode = Mode.STOPPED
+    private var searchQuery: String = ""
 
     enum class Mode {
         STOPPED,
-        RECORDING,
-        DEBUG,
-        MOCKK
+        RECORDING,      // Recording without debug
+        DEBUG,          // Recording + Debug
+        MOCKK,          // Mockk without debug
+        MOCKK_DEBUG     // Mockk + Debug
     }
 
     init {
@@ -99,48 +106,38 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             addActionListener { refreshApps() }
         }
 
-        // Create mode buttons
-        recordingButton = JToggleButton("Recording", AllIcons.Debugger.Db_set_breakpoint).apply {
-            toolTipText = "Start/Stop Recording Mode"
+        // Create mode radio buttons
+        recordingRadio = JRadioButton("Recording", AllIcons.Debugger.Db_set_breakpoint, true).apply {
+            toolTipText = "Capture network traffic"
             isEnabled = false
-            addActionListener { toggleRecording() }
-            addItemListener { _ ->
-                if (isSelected) {
-                    text = "Stop Recording"
-                    icon = AllIcons.Actions.Suspend
-                } else {
-                    text = "Recording"
-                    icon = AllIcons.Debugger.Db_set_breakpoint
-                }
-            }
+            addActionListener { updateModeIfRunning() }
         }
 
-        debugButton = JToggleButton("Debug", AllIcons.Actions.StartDebugger).apply {
-            toolTipText = "Start/Stop Debug Mode"
+        mockkRadio = JRadioButton("Mockk", AllIcons.Nodes.DataSchema, false).apply {
+            toolTipText = "Apply mock rules from configured collections"
             isEnabled = false
-            addActionListener { toggleDebug() }
-            addItemListener { _ ->
-                if (isSelected) {
-                    text = "Stop Debug"
-                    icon = AllIcons.Actions.Suspend
-                } else {
-                    text = "Debug"
-                    icon = AllIcons.Actions.StartDebugger
-                }
-            }
+            addActionListener { updateModeIfRunning() }
         }
 
-        mockkButton = JToggleButton("Mockk", AllIcons.Nodes.DataSchema).apply {
-            toolTipText = "Start/Stop Mockk Mode (Auto-apply mock rules)"
+        modeButtonGroup = ButtonGroup().apply {
+            add(recordingRadio)
+            add(mockkRadio)
+        }
+
+        debugCheckbox = JCheckBox("Debug", AllIcons.Actions.StartDebugger, false).apply {
+            toolTipText = "Pause each request/response for manual inspection and editing"
             isEnabled = false
-            addActionListener { toggleMockk() }
-            addItemListener { _ ->
-                if (isSelected) {
-                    text = "Stop Mockk"
-                    icon = AllIcons.Actions.Suspend
+            addActionListener { updateModeIfRunning() }
+        }
+
+        startStopButton = JButton("Start", AllIcons.Actions.Execute).apply {
+            toolTipText = "Start interceptor with selected mode"
+            isEnabled = false
+            addActionListener {
+                if (currentMode == Mode.STOPPED) {
+                    startInterceptor()
                 } else {
-                    text = "Mockk"
-                    icon = AllIcons.Nodes.DataSchema
+                    stopInterceptor()
                 }
             }
         }
@@ -159,11 +156,48 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             foreground = JBColor.GRAY
         }
 
+        // Search field
+        searchField = JBTextField().apply {
+            emptyText.text = "Search flows... (⌘F)"
+
+            // Add listener for real-time filtering
+            document.addDocumentListener(object : javax.swing.event.DocumentListener {
+                override fun insertUpdate(e: javax.swing.event.DocumentEvent?) {
+                    filterFlows()
+                }
+                override fun removeUpdate(e: javax.swing.event.DocumentEvent?) {
+                    filterFlows()
+                }
+                override fun changedUpdate(e: javax.swing.event.DocumentEvent?) {
+                    filterFlows()
+                }
+            })
+        }
+
         // Flow list
         flowListModel = DefaultListModel()
         flowList = JBList(flowListModel).apply {
             cellRenderer = FlowListCellRenderer()
-            selectionMode = ListSelectionModel.SINGLE_SELECTION
+            selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+
+            // Add keyboard listener for Command+A (Select All) and Command+F (Search)
+            addKeyListener(object : java.awt.event.KeyAdapter() {
+                override fun keyPressed(e: java.awt.event.KeyEvent) {
+                    when {
+                        // Command+A (Mac) or Ctrl+A (Windows/Linux) - Select All
+                        (e.isMetaDown || e.isControlDown) && e.keyCode == java.awt.event.KeyEvent.VK_A -> {
+                            selectionModel.setSelectionInterval(0, model.size - 1)
+                            e.consume()
+                        }
+                        // Command+F (Mac) or Ctrl+F (Windows/Linux) - Focus Search
+                        (e.isMetaDown || e.isControlDown) && e.keyCode == java.awt.event.KeyEvent.VK_F -> {
+                            searchField.requestFocusInWindow()
+                            searchField.selectAll()
+                            e.consume()
+                        }
+                    }
+                }
+            })
 
             // Add mouse listener for double-click and context menu
             addMouseListener(object : java.awt.event.MouseAdapter() {
@@ -196,13 +230,23 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         // Listen to flow changes
         flowStore.addFlowAddedListener { flow ->
             SwingUtilities.invokeLater {
-                flowListModel.addElement(flow)
+                allFlows.add(flow)
+                // Apply filter
+                if (matchesSearchQuery(flow, searchQuery)) {
+                    flowListModel.addElement(flow)
+                }
             }
         }
 
         flowStore.addFlowUpdatedListener { updatedFlow ->
             SwingUtilities.invokeLater {
-                // Find and update the flow in the list
+                // Update in allFlows
+                val indexInAll = allFlows.indexOfFirst { it.flowId == updatedFlow.flowId }
+                if (indexInAll >= 0) {
+                    allFlows[indexInAll] = updatedFlow
+                }
+
+                // Update in filtered list if present
                 for (i in 0 until flowListModel.size()) {
                     val existingFlow = flowListModel.getElementAt(i)
                     if (existingFlow.flowId == updatedFlow.flowId) {
@@ -215,6 +259,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         flowStore.addFlowsClearedListener {
             SwingUtilities.invokeLater {
+                allFlows.clear()
                 flowListModel.clear()
             }
         }
@@ -230,19 +275,26 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun setupLayout() {
         border = JBUI.Borders.empty(5)
 
-        // Top panel: Mode buttons + Emulator/App selectors
+        // Top panel: Mode selection + Controls + Emulator/App selectors
         val topPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(5, 5, 0, 5)
 
-            // Left side: Mode buttons
-            val modeButtonsPanel = JPanel().apply {
+            // Left side: Mode selection (Radio buttons + Debug checkbox) + Start/Stop buttons
+            val modePanel = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
 
-                add(recordingButton)
-                add(Box.createHorizontalStrut(2))
-                add(debugButton)
-                add(Box.createHorizontalStrut(2))
-                add(mockkButton)
+                // Mode radio buttons
+                add(recordingRadio)
+                add(Box.createHorizontalStrut(5))
+                add(mockkRadio)
+                add(Box.createHorizontalStrut(15))
+
+                // Debug checkbox
+                add(debugCheckbox)
+                add(Box.createHorizontalStrut(15))
+
+                // Start/Stop button
+                add(startStopButton)
                 add(Box.createHorizontalStrut(15))
             }
 
@@ -268,19 +320,28 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 add(Box.createHorizontalGlue())
             }
 
-            // Combine mode buttons and selectors
+            // Combine mode panel and selectors
             val combinedPanel = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
-                add(modeButtonsPanel)
+                add(modePanel)
                 add(selectorsPanel)
             }
 
             add(combinedPanel, BorderLayout.CENTER)
         }
 
-        // Center panel: Flow list
+        // Center panel: Search field + Flow list
         val flowPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(5)
+
+            // Search panel
+            val searchPanel = JPanel(BorderLayout()).apply {
+                border = JBUI.Borders.empty(0, 0, 5, 0)
+                add(JBLabel("🔍 "), BorderLayout.WEST)
+                add(searchField, BorderLayout.CENTER)
+            }
+
+            add(searchPanel, BorderLayout.NORTH)
             add(JBScrollPane(flowList), BorderLayout.CENTER)
         }
 
@@ -390,108 +451,99 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun onAppSelected() {
         selectedApp = appComboBox.selectedItem as? AppInfo
         updateButtonStates()
+        updatePackageFilterIfRunning()
     }
 
     private fun updateButtonStates() {
         val hasSelection = selectedEmulator != null && selectedApp != null
+        val isRunning = currentMode != Mode.STOPPED
+
         refreshAppsButton.isEnabled = selectedEmulator != null
-        recordingButton.isEnabled = hasSelection || currentMode != Mode.STOPPED
-        debugButton.isEnabled = hasSelection || currentMode != Mode.STOPPED
-        mockkButton.isEnabled = hasSelection || currentMode != Mode.STOPPED
-    }
+        recordingRadio.isEnabled = hasSelection
+        mockkRadio.isEnabled = hasSelection
+        debugCheckbox.isEnabled = hasSelection
+        startStopButton.isEnabled = hasSelection
 
-    private fun toggleRecording() {
-        if (recordingButton.isSelected) {
-            // If another mode is active, switch to this mode
-            if (currentMode != Mode.STOPPED && currentMode != Mode.RECORDING) {
-                switchMode(Mode.RECORDING)
-            } else {
-                start(Mode.RECORDING)
-            }
+        // Update button appearance based on state
+        if (isRunning) {
+            startStopButton.text = "Stop"
+            startStopButton.icon = AllIcons.Actions.Suspend
+            startStopButton.toolTipText = "Stop interceptor"
         } else {
-            stop()
+            startStopButton.text = "Start"
+            startStopButton.icon = AllIcons.Actions.Execute
+            startStopButton.toolTipText = "Start interceptor with selected mode"
         }
     }
 
-    private fun toggleDebug() {
-        if (debugButton.isSelected) {
-            // If another mode is active, switch to this mode
-            if (currentMode != Mode.STOPPED && currentMode != Mode.DEBUG) {
-                switchMode(Mode.DEBUG)
-            } else {
-                start(Mode.DEBUG)
-            }
-        } else {
-            stop()
+    private fun getCurrentSelectedMode(): Mode {
+        return when {
+            recordingRadio.isSelected && !debugCheckbox.isSelected -> Mode.RECORDING
+            recordingRadio.isSelected && debugCheckbox.isSelected -> Mode.DEBUG
+            mockkRadio.isSelected && !debugCheckbox.isSelected -> Mode.MOCKK
+            mockkRadio.isSelected && debugCheckbox.isSelected -> Mode.MOCKK_DEBUG
+            else -> Mode.STOPPED
         }
     }
 
-    private fun toggleMockk() {
-        if (mockkButton.isSelected) {
-            // If another mode is active, switch to this mode
-            if (currentMode != Mode.STOPPED && currentMode != Mode.MOCKK) {
-                switchMode(Mode.MOCKK)
-            } else {
-                start(Mode.MOCKK)
+    private fun updateModeIfRunning() {
+        if (currentMode == Mode.STOPPED) return
+
+        val newMode = getCurrentSelectedMode()
+        if (newMode != currentMode && newMode != Mode.STOPPED) {
+            // Update UI state
+            currentMode = newMode
+
+            val statusText = when (newMode) {
+                Mode.RECORDING -> "Recording..."
+                Mode.DEBUG -> "Debug Mode (Recording + Pause)"
+                Mode.MOCKK -> "Mockk Mode"
+                Mode.MOCKK_DEBUG -> "Mockk Debug Mode (Mock + Pause)"
+                Mode.STOPPED -> "Stopped"
             }
-        } else {
-            stop()
+            val statusColor = when (newMode) {
+                Mode.RECORDING -> JBColor.GREEN
+                Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
+                Mode.MOCKK -> JBColor.ORANGE
+                Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
+                Mode.STOPPED -> JBColor.GRAY
+            }
+
+            updateStatus(statusText, statusColor)
+
+            // Update server mode
+            val serverMode = when (newMode) {
+                Mode.RECORDING -> OkHttpInterceptorServer.Mode.RECORDING
+                Mode.DEBUG -> OkHttpInterceptorServer.Mode.DEBUG
+                Mode.MOCKK -> OkHttpInterceptorServer.Mode.MOCKK
+                Mode.MOCKK_DEBUG -> OkHttpInterceptorServer.Mode.MOCKK_DEBUG
+                Mode.STOPPED -> return
+            }
+            okHttpInterceptorServer.setMode(serverMode)
+            logger.info("🔄 Mode changed to ${newMode.name} while running")
         }
     }
 
-    /**
-     * Switch from current mode to a new mode without fully stopping the server.
-     * Just changes the server's mode internally.
-     */
-    private fun switchMode(newMode: Mode) {
-        object : Task.Backgroundable(project, "Switching to ${newMode.name} mode", false) {
-            override fun run(indicator: ProgressIndicator) {
-                try {
-                    logger.info("🔄 Switching from ${currentMode.name} to ${newMode.name} mode...")
+    private fun updatePackageFilterIfRunning() {
+        if (currentMode == Mode.STOPPED) return
 
-                    // Map mode to OkHttpInterceptorServer.Mode
-                    val serverMode = when (newMode) {
-                        Mode.RECORDING -> OkHttpInterceptorServer.Mode.RECORDING
-                        Mode.DEBUG -> OkHttpInterceptorServer.Mode.DEBUG
-                        Mode.MOCKK -> OkHttpInterceptorServer.Mode.MOCKK
-                        Mode.STOPPED -> throw Exception("Cannot switch to STOPPED mode")
-                    }
-
-                    // Change mode on the server (server stays running)
-                    okHttpInterceptorServer.setMode(serverMode)
-
-                    // Update UI
-                    SwingUtilities.invokeLater {
-                        currentMode = newMode
-                        recordingButton.isSelected = (newMode == Mode.RECORDING)
-                        debugButton.isSelected = (newMode == Mode.DEBUG)
-                        mockkButton.isSelected = (newMode == Mode.MOCKK)
-
-                        val statusText = when (newMode) {
-                            Mode.RECORDING -> "Recording..."
-                            Mode.DEBUG -> "Debug Mode"
-                            Mode.MOCKK -> "Mockk Mode"
-                            Mode.STOPPED -> "Stopped"
-                        }
-                        val statusColor = when (newMode) {
-                            Mode.RECORDING -> JBColor.GREEN
-                            Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
-                            Mode.MOCKK -> JBColor.ORANGE
-                            Mode.STOPPED -> JBColor.GRAY
-                        }
-
-                        updateStatus(statusText, statusColor)
-                        updateButtonStates()
-                    }
-
-                    logger.info("✅ Switched to ${newMode.name} mode")
-
-                } catch (e: Exception) {
-                    logger.error("Failed to switch mode", e)
-                }
-            }
-        }.queue()
+        val packageNameFilter = selectedApp?.packageName
+        okHttpInterceptorServer.setPackageNameFilter(packageNameFilter)
     }
+
+    private fun startInterceptor() {
+        val mode = getCurrentSelectedMode()
+        if (mode == Mode.STOPPED) {
+            logger.error("Invalid mode selection")
+            return
+        }
+        start(mode)
+    }
+
+    private fun stopInterceptor() {
+        stop()
+    }
+
 
     private fun start(mode: Mode) {
         object : Task.Backgroundable(project, "Starting ${mode.name} Mode", true) {
@@ -512,6 +564,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         Mode.RECORDING -> OkHttpInterceptorServer.Mode.RECORDING
                         Mode.DEBUG -> OkHttpInterceptorServer.Mode.DEBUG
                         Mode.MOCKK -> OkHttpInterceptorServer.Mode.MOCKK
+                        Mode.MOCKK_DEBUG -> OkHttpInterceptorServer.Mode.MOCKK_DEBUG
                         Mode.STOPPED -> throw Exception("Cannot start in STOPPED mode")
                     }
 
@@ -527,20 +580,19 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     // Update UI
                     SwingUtilities.invokeLater {
                         currentMode = mode
-                        recordingButton.isSelected = (mode == Mode.RECORDING)
-                        debugButton.isSelected = (mode == Mode.DEBUG)
-                        mockkButton.isSelected = (mode == Mode.MOCKK)
 
                         val statusText = when (mode) {
                             Mode.RECORDING -> "Recording..."
-                            Mode.DEBUG -> "Debug Mode"
+                            Mode.DEBUG -> "Debug Mode (Recording + Pause)"
                             Mode.MOCKK -> "Mockk Mode"
+                            Mode.MOCKK_DEBUG -> "Mockk Debug Mode (Mock + Pause)"
                             Mode.STOPPED -> "Stopped"
                         }
                         val statusColor = when (mode) {
                             Mode.RECORDING -> JBColor.GREEN
                             Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
                             Mode.MOCKK -> JBColor.ORANGE
+                            Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
                             Mode.STOPPED -> JBColor.GRAY
                         }
 
@@ -556,9 +608,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                     SwingUtilities.invokeLater {
                         currentMode = Mode.STOPPED
-                        recordingButton.isSelected = false
-                        debugButton.isSelected = false
-                        mockkButton.isSelected = false
                         updateStatus("Error: ${e.message}", JBColor.RED)
                         updateButtonStates()
 
@@ -583,9 +632,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                     SwingUtilities.invokeLater {
                         currentMode = Mode.STOPPED
-                        recordingButton.isSelected = false
-                        debugButton.isSelected = false
-                        mockkButton.isSelected = false
                         updateStatus("Stopped", JBColor.GRAY)
                         updateButtonStates()
                     }
@@ -677,46 +723,125 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun showContextMenu(e: java.awt.event.MouseEvent) {
-        // Select the item under cursor if not already selected
         val index = flowList.locationToIndex(e.point)
         if (index >= 0) {
-            flowList.selectedIndex = index
-            val selectedFlow = flowList.model.getElementAt(index)
+            // If clicked item is not selected, select only that item
+            if (!flowList.isSelectedIndex(index)) {
+                flowList.selectedIndex = index
+            }
 
+            val selectedFlows = flowList.selectedValuesList
             val popup = JPopupMenu()
 
-            // "Create Mock Rule from Response" menu item
-            if (selectedFlow.response != null) {
-                val createMockItem = JMenuItem("Create Mock Rule from Response", AllIcons.Actions.MenuSaveall)
-                createMockItem.addActionListener {
-                    createMockFromFlow(selectedFlow)
+            if (selectedFlows.size == 1) {
+                // Single selection - show standard options
+                val selectedFlow = selectedFlows[0]
+
+                // "Create Mock Rule from Response" menu item
+                if (selectedFlow.response != null) {
+                    val createMockItem = JMenuItem("Create Mock Rule from Response", AllIcons.Actions.MenuSaveall)
+                    createMockItem.addActionListener {
+                        createMockFromFlow(selectedFlow)
+                    }
+                    popup.add(createMockItem)
                 }
-                popup.add(createMockItem)
+
+                // "View Details" menu item
+                val detailsItem = JMenuItem("View Details", AllIcons.Actions.Preview)
+                detailsItem.addActionListener {
+                    showFlowDetails(selectedFlow)
+                }
+                popup.add(detailsItem)
+
+            } else if (selectedFlows.size > 1) {
+                // Multiple selection - show batch create option
+                val flowsWithResponse = selectedFlows.filter { it.response != null }
+
+                if (flowsWithResponse.isNotEmpty()) {
+                    val batchCreateItem = JMenuItem(
+                        "Create ${flowsWithResponse.size} Mock Rules from Selection",
+                        AllIcons.Actions.MenuSaveall
+                    )
+                    batchCreateItem.addActionListener {
+                        createMocksFromFlows(flowsWithResponse)
+                    }
+                    popup.add(batchCreateItem)
+                }
             }
 
-            // "View Details" menu item
-            val detailsItem = JMenuItem("View Details", AllIcons.Actions.Preview)
-            detailsItem.addActionListener {
-                showFlowDetails(selectedFlow)
+            // Show popup if it has items
+            if (popup.componentCount > 0) {
+                popup.show(e.component, e.x, e.y)
             }
-            popup.add(detailsItem)
-
-            // Show popup
-            popup.show(e.component, e.x, e.y)
         }
     }
 
     private fun createMockFromFlow(flow: HttpFlowData) {
-        val dialog = CreateMockDialog(project, initialFlow = flow)
+        // Use selected app's package name to filter collections
+        val packageName = selectedApp?.packageName
+        val dialog = CreateMockDialog(
+            project = project,
+            initialFlow = flow,
+            targetPackageName = packageName
+        )
         if (dialog.showAndGet()) {
             logger.info("Mock rule created from flow")
         }
     }
 
+    private fun createMocksFromFlows(flows: List<HttpFlowData>) {
+        // Use selected app's package name to filter collections
+        val packageName = selectedApp?.packageName
+        val dialog = BatchCreateMockDialog(
+            project = project,
+            flows = flows,
+            targetPackageName = packageName
+        )
+        if (dialog.showAndGet()) {
+            logger.info("${flows.size} mock rules created from flows")
+        }
+    }
+
+    private fun filterFlows() {
+        searchQuery = searchField.text.trim()
+
+        SwingUtilities.invokeLater {
+            flowListModel.clear()
+
+            // Add flows that match the search query
+            for (flow in allFlows) {
+                if (matchesSearchQuery(flow, searchQuery)) {
+                    flowListModel.addElement(flow)
+                }
+            }
+        }
+    }
+
+    private fun matchesSearchQuery(flow: HttpFlowData, query: String): Boolean {
+        if (query.isEmpty()) return true
+
+        val lowerQuery = query.lowercase()
+        val flowText = buildString {
+            append(flow.request.method)
+            append(" ")
+            append(flow.request.url)
+            append(" ")
+            if (flow.mockApplied && flow.mockRuleName != null) {
+                append(flow.mockRuleName)
+                append(" ")
+            }
+            if (flow.response != null) {
+                append(flow.response.statusCode.toString())
+            }
+        }.lowercase()
+
+        return flowText.contains(lowerQuery)
+    }
+
     /**
-     * Custom cell renderer for flow list.
+     * Custom cell renderer for flow list with search highlighting.
      */
-    private class FlowListCellRenderer : DefaultListCellRenderer() {
+    private inner class FlowListCellRenderer : DefaultListCellRenderer() {
         override fun getListCellRendererComponent(
             list: JList<*>?, value: Any?, index: Int,
             isSelected: Boolean, cellHasFocus: Boolean
@@ -739,8 +864,16 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     else -> ""
                 }
 
-                // Show full URL with badge
-                text = "$statusIcon $badge${value.request.method} ${value.request.url}"
+                // Build text with highlighting if search is active
+                val baseText = "$statusIcon $badge${value.request.method} ${value.request.url}"
+
+                text = if (searchQuery.isNotEmpty()) {
+                    // Use HTML to highlight matching text
+                    val highlightedText = highlightText(baseText, searchQuery)
+                    "<html>$highlightedText</html>"
+                } else {
+                    baseText
+                }
 
                 // Change foreground color based on type
                 if (!isSelected) {
@@ -753,6 +886,24 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
 
             return this
+        }
+
+        private fun highlightText(text: String, query: String): String {
+            if (query.isEmpty()) return text
+
+            // Escape HTML special characters
+            var escaped = text
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+
+            // Find and highlight all occurrences (case-insensitive)
+            val pattern = Regex(Regex.escape(query), RegexOption.IGNORE_CASE)
+            escaped = pattern.replace(escaped) { matchResult ->
+                "<span style='background-color: #FFFF00; color: #000000;'>${matchResult.value}</span>"
+            }
+
+            return escaped
         }
     }
 }

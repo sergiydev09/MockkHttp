@@ -5,7 +5,9 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
@@ -31,15 +33,18 @@ class DebugInterceptDialog(
 ) : DialogWrapper(project) {
 
     private val logger = MockkHttpLogger.getInstance(project)
+    private val mockkRulesStore = com.sergiy.dev.mockkhttp.store.MockkRulesStore.getInstance(project)
 
     // Response editing fields
     private val statusCodeField: JTextField
     private val headersTextArea: JTextArea
     private val bodyTextArea: JTextArea
 
-    // Save as Mockk Rule checkbox and name field
+    // Save as Mockk Rule checkbox, name field, and collection selector
     private val saveAsMockkRuleCheckbox: JCheckBox
     private val mockRuleNameField: JBTextField
+    private val collectionComboBox: ComboBox<com.sergiy.dev.mockkhttp.model.MockkCollection>
+    private val newCollectionButton: JButton
 
     // Flag to track which action was taken
     private var actionTaken: ActionType = ActionType.CANCEL
@@ -97,9 +102,43 @@ class DebugInterceptDialog(
             isEnabled = false // Disabled until checkbox is checked
         }
 
-        // Enable/disable name field based on checkbox
+        // Initialize collection selector
+        collectionComboBox = ComboBox<com.sergiy.dev.mockkhttp.model.MockkCollection>().apply {
+            renderer = object : DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: JList<*>?, value: Any?, index: Int,
+                    isSelected: Boolean, cellHasFocus: Boolean
+                ): Component {
+                    super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                    if (value is com.sergiy.dev.mockkhttp.model.MockkCollection) {
+                        text = "${value.name}${if (value.packageName.isNotEmpty()) " [${value.packageName}]" else ""}"
+                    }
+                    return this
+                }
+            }
+            isEnabled = false
+
+            // Load collections
+            mockkRulesStore.getAllCollections().forEach { addItem(it) }
+
+            // Pre-select first if available
+            if (itemCount > 0) {
+                selectedIndex = 0
+            }
+        }
+
+        newCollectionButton = JButton("New", AllIcons.General.Add).apply {
+            toolTipText = "Create a new collection"
+            isEnabled = false
+            addActionListener { createNewCollectionInline() }
+        }
+
+        // Enable/disable fields based on checkbox
         saveAsMockkRuleCheckbox.addItemListener {
-            mockRuleNameField.isEnabled = saveAsMockkRuleCheckbox.isSelected
+            val enabled = saveAsMockkRuleCheckbox.isSelected
+            mockRuleNameField.isEnabled = enabled
+            collectionComboBox.isEnabled = enabled
+            newCollectionButton.isEnabled = enabled
         }
 
         init()
@@ -251,13 +290,17 @@ class DebugInterceptDialog(
         val wrapperPanel = JPanel(BorderLayout())
         wrapperPanel.add(southPanel, BorderLayout.CENTER)
 
-        // Add checkbox and name field to the left
-        val checkboxPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+        // Add checkbox, name field, collection selector, and new collection button to the left
+        val checkboxPanel = JPanel(FlowLayout(FlowLayout.LEFT, 5, 5)).apply {
             add(saveAsMockkRuleCheckbox)
             add(JLabel("Name:"))
             add(mockRuleNameField)
+            add(JLabel("Collection:"))
+            add(collectionComboBox)
+            add(newCollectionButton)
         }
-        mockRuleNameField.preferredSize = Dimension(300, mockRuleNameField.preferredSize.height)
+        mockRuleNameField.preferredSize = Dimension(250, mockRuleNameField.preferredSize.height)
+        collectionComboBox.preferredSize = Dimension(200, collectionComboBox.preferredSize.height)
         wrapperPanel.add(checkboxPanel, BorderLayout.WEST)
 
         return wrapperPanel
@@ -266,13 +309,21 @@ class DebugInterceptDialog(
     /**
      * Action to continue with remote (original) response.
      */
-    private inner class ContinueRemoteAction : DialogWrapperAction("Continue with Remote Response") {
+    private inner class ContinueRemoteAction : DialogWrapperAction(
+        if (flow.mockApplied) "Continue with Mockk Response" else "Continue with Remote Response"
+    ) {
         init {
-            putValue(SHORT_DESCRIPTION, "Forward the original response from the server")
+            val description = if (flow.mockApplied) {
+                "Forward the mocked response (from mock rule: ${flow.mockRuleName})"
+            } else {
+                "Forward the original response from the server"
+            }
+            putValue(SHORT_DESCRIPTION, description)
         }
 
         override fun doAction(e: java.awt.event.ActionEvent?) {
-            logger.info("Continuing with remote response for flow: ${flow.flowId}")
+            val responseType = if (flow.mockApplied) "mocked" else "remote"
+            logger.info("Continuing with $responseType response for flow: ${flow.flowId}")
             actionTaken = ActionType.CONTINUE_REMOTE
             close(OK_EXIT_CODE)
         }
@@ -336,6 +387,49 @@ class DebugInterceptDialog(
         return mockRuleNameField.text.ifBlank {
             "${flow.request.method} ${flow.request.getShortUrl()}"
         }
+    }
+
+    /**
+     * Get the selected collection for saving the mock.
+     */
+    fun getSelectedCollection(): com.sergiy.dev.mockkhttp.model.MockkCollection? {
+        return collectionComboBox.selectedItem as? com.sergiy.dev.mockkhttp.model.MockkCollection
+    }
+
+    /**
+     * Create a new collection inline (without leaving the dialog).
+     */
+    private fun createNewCollectionInline() {
+        val name = Messages.showInputDialog(
+            this.contentPane,
+            "Enter collection name:",
+            "New Collection",
+            Messages.getQuestionIcon(),
+            "",
+            null
+        ) ?: return
+
+        if (name.isBlank()) {
+            Messages.showErrorDialog(this.contentPane, "Collection name cannot be empty", "Invalid Name")
+            return
+        }
+
+        val description = Messages.showInputDialog(
+            this.contentPane,
+            "Enter collection description (optional):",
+            "Collection Description",
+            Messages.getQuestionIcon(),
+            "",
+            null
+        ) ?: ""
+
+        // Create collection (no package filter in debug dialog - user can specify in CreateMockDialog later)
+        val newCollection = mockkRulesStore.addCollection(name, "", description)
+        logger.info("Created new collection: $name")
+
+        // Add to combo box and select it
+        collectionComboBox.addItem(newCollection)
+        collectionComboBox.selectedItem = newCollection
     }
 
     /**

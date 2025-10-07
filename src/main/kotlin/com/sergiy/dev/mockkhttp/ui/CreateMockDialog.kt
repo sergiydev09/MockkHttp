@@ -6,6 +6,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
@@ -35,13 +36,19 @@ import javax.swing.table.TableCellRenderer
  * Single scrollable view without tabs.
  */
 class CreateMockDialog(
-    project: Project,
+    private val project: Project,
     private val existingRule: MockkRulesStore.MockkRule? = null,
-    private val initialFlow: com.sergiy.dev.mockkhttp.model.HttpFlowData? = null
+    private val initialFlow: com.sergiy.dev.mockkhttp.model.HttpFlowData? = null,
+    private val targetPackageName: String? = null,     // Filter collections by package
+    private val targetCollectionId: String? = null     // Pre-select collection
 ) : DialogWrapper(project) {
 
     private val logger = MockkHttpLogger.getInstance(project)
     private val mockkRulesStore = MockkRulesStore.getInstance(project)
+
+    // Collection selector
+    private val collectionComboBox: ComboBox<com.sergiy.dev.mockkhttp.model.MockkCollection>
+    private val newCollectionButton: JButton
 
     // Request fields
     private val nameField: JBTextField
@@ -61,6 +68,52 @@ class CreateMockDialog(
 
     init {
         title = if (existingRule != null) "Edit Mock Rule" else "Create Mock Rule"
+
+        // Initialize collection selector
+        val availableCollections = if (targetPackageName != null) {
+            mockkRulesStore.getCollectionsByPackage(targetPackageName)
+        } else {
+            mockkRulesStore.getAllCollections()
+        }
+
+        collectionComboBox = ComboBox<com.sergiy.dev.mockkhttp.model.MockkCollection>().apply {
+            renderer = object : DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: JList<*>?, value: Any?, index: Int,
+                    isSelected: Boolean, cellHasFocus: Boolean
+                ): java.awt.Component {
+                    super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                    if (value is com.sergiy.dev.mockkhttp.model.MockkCollection) {
+                        text = "${value.name} ${if (value.packageName.isNotEmpty()) "[${value.packageName}]" else ""}"
+                    }
+                    return this
+                }
+            }
+
+            // Populate collections
+            availableCollections.forEach { addItem(it) }
+
+            // Pre-select collection if specified
+            if (targetCollectionId != null) {
+                val targetCollection = availableCollections.find { it.id == targetCollectionId }
+                if (targetCollection != null) {
+                    selectedItem = targetCollection
+                }
+            } else if (existingRule != null) {
+                // If editing, select the rule's collection
+                val ruleCollection = mockkRulesStore.getCollection(existingRule.collectionId)
+                if (ruleCollection != null) {
+                    selectedItem = ruleCollection
+                }
+            }
+        }
+
+        newCollectionButton = JButton("New Collection", AllIcons.General.Add).apply {
+            toolTipText = "Create a new collection"
+            addActionListener {
+                createNewCollectionInline()
+            }
+        }
 
         // Initialize request fields
         nameField = JBTextField(existingRule?.name ?: "")
@@ -163,6 +216,16 @@ class CreateMockDialog(
             border = JBUI.Borders.empty(10)
         }
 
+        // === COLLECTION SELECTOR ===
+        mainPanel.add(createCollectionSelectorPanel())
+        mainPanel.add(Box.createVerticalStrut(10))
+
+        // Separator
+        mainPanel.add(JSeparator(SwingConstants.HORIZONTAL).apply {
+            maximumSize = Dimension(Int.MAX_VALUE, 1)
+        })
+        mainPanel.add(Box.createVerticalStrut(10))
+
         // === REQUEST SECTION ===
         mainPanel.add(createSectionLabel("Request Configuration"))
         mainPanel.add(Box.createVerticalStrut(10))
@@ -198,6 +261,71 @@ class CreateMockDialog(
             icon = AllIcons.General.Settings
             alignmentX = JComponent.LEFT_ALIGNMENT
         }
+    }
+
+    private fun createCollectionSelectorPanel(): JPanel {
+        val panel = JPanel(GridBagLayout()).apply {
+            alignmentX = JComponent.LEFT_ALIGNMENT
+        }
+
+        val gbc = GridBagConstraints().apply {
+            fill = GridBagConstraints.HORIZONTAL
+            insets = JBUI.insets(5)
+        }
+
+        // Row 0: Collection label and combo box
+        gbc.gridx = 0
+        gbc.gridy = 0
+        gbc.weightx = 0.0
+        panel.add(JLabel("Collection:").apply {
+            font = font.deriveFont(Font.BOLD)
+        }, gbc)
+
+        gbc.gridx = 1
+        gbc.weightx = 1.0
+        panel.add(collectionComboBox, gbc)
+
+        gbc.gridx = 2
+        gbc.weightx = 0.0
+        panel.add(newCollectionButton, gbc)
+
+        panel.maximumSize = Dimension(Int.MAX_VALUE, panel.preferredSize.height)
+        return panel
+    }
+
+    private fun createNewCollectionInline() {
+        val name = Messages.showInputDialog(
+            this.contentPane,
+            "Enter collection name:",
+            "New Collection",
+            Messages.getQuestionIcon(),
+            "",
+            null
+        ) ?: return
+
+        if (name.isBlank()) {
+            Messages.showErrorDialog(this.contentPane, "Collection name cannot be empty", "Error")
+            return
+        }
+
+        val description = Messages.showInputDialog(
+            this.contentPane,
+            "Enter description (optional):",
+            "New Collection",
+            Messages.getQuestionIcon(),
+            "",
+            null
+        ) ?: ""
+
+        // Use targetPackageName if available, otherwise empty
+        val packageName = targetPackageName ?: ""
+
+        val newCollection = mockkRulesStore.addCollection(name, packageName, description)
+        logger.info("Created new collection inline: $name")
+
+        // Add to combo box and select it
+        collectionComboBox.addItem(newCollection)
+        collectionComboBox.selectedItem = newCollection
     }
 
     private fun createBasicInfoPanel(): JPanel {
@@ -578,6 +706,19 @@ class CreateMockDialog(
             }
         }
 
+        // Get selected collection
+        val selectedCollection = collectionComboBox.selectedItem as? com.sergiy.dev.mockkhttp.model.MockkCollection
+        val collectionId = selectedCollection?.id ?: ""
+
+        if (collectionId.isEmpty()) {
+            Messages.showErrorDialog(
+                this.contentPane,
+                "Please select or create a collection first",
+                "No Collection Selected"
+            )
+            return
+        }
+
         if (existingRule != null) {
             mockkRulesStore.removeRule(existingRule)
         }
@@ -590,10 +731,11 @@ class CreateMockDialog(
                 statusCode = statusCodeField.text.toInt(),
                 headers = headers,
                 content = bodyTextArea.text
-            )
+            ),
+            collectionId = collectionId
         )
 
-        logger.info("Mock rule ${if (existingRule != null) "updated" else "created"}: ${nameField.text}")
+        logger.info("Mock rule ${if (existingRule != null) "updated" else "created"}: ${nameField.text} in collection: $collectionId")
         super.doOKAction()
     }
 
