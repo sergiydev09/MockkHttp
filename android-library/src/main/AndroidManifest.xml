@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Declare support for 16KB page sizes -->
-    <property android:name="android.supports_page_sizes" android:value="16384" />
+    <application>
+        <!-- Declare support for 16KB page sizes -->
+        <property android:name="android.supports_page_sizes" android:value="16384" />
+    </application>
 </manifest>
