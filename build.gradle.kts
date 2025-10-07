@@ -2,12 +2,12 @@ plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "2.1.0"
     id("org.jetbrains.kotlin.android") version "2.1.0" apply false
-    id("com.android.library") version "8.2.0" apply false
+    id("com.android.library") version "8.7.3" apply false
     id("org.jetbrains.intellij.platform") version "2.5.0"
 }
 
 group = "com.sergiy.dev"
-version = "1.2.0"
+version = "1.2.9"
 
 repositories {
     mavenCentral()
@@ -46,7 +46,7 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.2.0 - Interceptor Architecture & Security Hardening</h3>
+            <h3>Version 1.2.8 - Interceptor Architecture & Security Hardening</h3>
             <ul>
                 <li><strong>🚀 New Architecture:</strong> Switched from mitmproxy to OkHttp Interceptor for simpler, more reliable operation</li>
                 <li><strong>⚡ Zero Configuration:</strong> No proxy setup, no certificates, no iptables - just add Gradle plugin and go!</li>

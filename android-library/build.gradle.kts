@@ -10,7 +10,7 @@ repositories {
 }
 
 group = "com.github.sergiydev09"
-version = "1.2.8"
+version = "1.2.9"
 
 android {
     namespace = "com.sergiy.dev.mockkhttp.interceptor"
@@ -58,7 +58,7 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.github.sergiydev09"
                 artifactId = "mockk-http-interceptor"
-                version = "1.2.8"
+                version = "1.2.9"
             }
         }
     }
