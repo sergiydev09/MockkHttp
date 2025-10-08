@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.4.11"
+version = "1.4.12"
 
 repositories {
     mavenCentral()
@@ -50,17 +50,17 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.4.11 - Maven Local Support</h3>
+            <h3>Version 1.4.12 - True Zero-Config</h3>
             <ul>
-                <li><strong>🔧 Fix:</strong> Compatible with PREFER_SETTINGS repository mode</li>
-                <li><strong>📦 Maven Local:</strong> AAR published to standard ~/.m2/repository</li>
-                <li><strong>✅ Setup:</strong> Add mavenLocal() to repositories if using PREFER_SETTINGS</li>
+                <li><strong>🎯 No Repository Needed:</strong> Uses files() dependency - works everywhere</li>
+                <li><strong>✅ PREFER_SETTINGS Compatible:</strong> No repository configuration required</li>
+                <li><strong>🚀 Zero Setup:</strong> Just apply the plugin and it works</li>
             </ul>
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.11"</code> to plugins block</li>
-                <li><strong>Step 2 (if using PREFER_SETTINGS):</strong> Add <code>mavenLocal()</code> to your settings.gradle.kts repositories</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.12"</code> to plugins block</li>
+                <li><strong>Step 2:</strong> That's it! No repository configuration needed</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
 
