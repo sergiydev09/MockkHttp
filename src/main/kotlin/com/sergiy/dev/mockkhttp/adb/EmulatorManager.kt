@@ -5,7 +5,6 @@ import com.android.ddmlib.AndroidDebugBridge
 import com.android.ddmlib.IDevice
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -16,7 +15,6 @@ import java.util.concurrent.TimeUnit
 @Service(Service.Level.PROJECT)
 class EmulatorManager(project: Project) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
     private var adbBridge: AndroidDebugBridge? = null
     private var isInitialized = false
     private val deviceChangeListeners = mutableListOf<() -> Unit>()
@@ -35,10 +33,8 @@ class EmulatorManager(project: Project) {
      * Must be called before any ADB operations.
      */
     fun initialize(): Boolean {
-        logger.info("🔧 Initializing ADB bridge...")
         
         if (isInitialized && adbBridge != null) {
-            logger.debug("ADB bridge already initialized")
             return true
         }
         
@@ -46,11 +42,9 @@ class EmulatorManager(project: Project) {
             // Find ADB executable
             val adbPath = findAdbPath()
             if (adbPath == null) {
-                logger.error("ADB executable not found. Please install Android SDK Platform Tools.")
                 return false
             }
 
-            logger.debug("ADB found at: $adbPath")
 
             // Initialize ADB with modern AdbInitOptions (only if not already initialized)
             // AndroidDebugBridge.init() can only be called ONCE per JVM process
@@ -62,10 +56,8 @@ class EmulatorManager(project: Project) {
                     .build()
 
                 AndroidDebugBridge.init(adbInitOptions)
-                logger.debug("ADB initialized successfully with AdbInitOptions")
             } catch (e: IllegalStateException) {
                 if (e.message?.contains("already been called") == true) {
-                    logger.debug("ADB already initialized by another project (multi-project mode)")
                 } else {
                     throw e
                 }
@@ -80,12 +72,10 @@ class EmulatorManager(project: Project) {
             )
             
             if (adbBridge == null) {
-                logger.error("Failed to create ADB bridge")
                 return false
             }
             
             // Wait for bridge to connect
-            logger.debug("Waiting for ADB bridge to connect...")
             val startTime = System.currentTimeMillis()
             while (!adbBridge!!.isConnected && 
                    System.currentTimeMillis() - startTime < ADB_INIT_TIMEOUT_MS) {
@@ -93,12 +83,10 @@ class EmulatorManager(project: Project) {
             }
             
             if (!adbBridge!!.isConnected) {
-                logger.error("ADB bridge connection timeout")
                 return false
             }
             
             // Wait for initial device list
-            logger.debug("Waiting for device list...")
             var waited = 0L
             while (!adbBridge!!.hasInitialDeviceList() && waited < ADB_INIT_TIMEOUT_MS) {
                 Thread.sleep(100)
@@ -108,32 +96,26 @@ class EmulatorManager(project: Project) {
             // Register device change listener
             deviceListener = object : AndroidDebugBridge.IDeviceChangeListener {
                 override fun deviceConnected(device: IDevice?) {
-                    logger.debug("Device connected: ${device?.serialNumber}")
                     notifyDeviceChange()
                 }
 
                 override fun deviceDisconnected(device: IDevice?) {
-                    logger.debug("Device disconnected: ${device?.serialNumber}")
                     notifyDeviceChange()
                 }
 
                 override fun deviceChanged(device: IDevice?, changeMask: Int) {
                     // Only notify on significant changes
                     if (changeMask and IDevice.CHANGE_STATE != 0) {
-                        logger.debug("Device state changed: ${device?.serialNumber}")
                         notifyDeviceChange()
                     }
                 }
             }
             AndroidDebugBridge.addDeviceChangeListener(deviceListener)
-            logger.debug("Device change listener registered")
 
             isInitialized = true
-            logger.info("✅ ADB bridge initialized successfully")
             return true
 
         } catch (e: Exception) {
-            logger.error("Failed to initialize ADB bridge", e)
             isInitialized = false
             return false
         }
@@ -145,14 +127,12 @@ class EmulatorManager(project: Project) {
      * Made public so other components can use it.
      */
     fun findAdbPath(): String? {
-        logger.debug("Searching for ADB executable...")
         
         // Try ANDROID_HOME environment variable
         val androidHome = System.getenv("ANDROID_HOME")
         if (androidHome != null) {
             val adbPath = File(androidHome, "platform-tools/adb")
             if (adbPath.exists()) {
-                logger.debug("ADB found via ANDROID_HOME: ${adbPath.absolutePath}")
                 return adbPath.absolutePath
             }
         }
@@ -162,7 +142,6 @@ class EmulatorManager(project: Project) {
         if (androidSdkRoot != null) {
             val adbPath = File(androidSdkRoot, "platform-tools/adb")
             if (adbPath.exists()) {
-                logger.debug("ADB found via ANDROID_SDK_ROOT: ${adbPath.absolutePath}")
                 return adbPath.absolutePath
             }
         }
@@ -171,7 +150,6 @@ class EmulatorManager(project: Project) {
         val macOsPath = File(System.getProperty("user.home"), 
                               "Library/Android/sdk/platform-tools/adb")
         if (macOsPath.exists()) {
-            logger.debug("ADB found at macOS default location: ${macOsPath.absolutePath}")
             return macOsPath.absolutePath
         }
         
@@ -180,12 +158,10 @@ class EmulatorManager(project: Project) {
         for (dir in pathEnv.split(":")) {
             val adbPath = File(dir, "adb")
             if (adbPath.exists() && adbPath.canExecute()) {
-                logger.debug("ADB found in PATH: ${adbPath.absolutePath}")
                 return adbPath.absolutePath
             }
         }
         
-        logger.warn("ADB not found in any common location")
         return null
     }
     
@@ -194,36 +170,28 @@ class EmulatorManager(project: Project) {
      * Returns only emulators, not physical devices.
      */
     fun getConnectedEmulators(): List<EmulatorInfo> {
-        logger.info("🔍 Detecting connected emulators...")
         
         if (!isInitialized) {
-            logger.warn("ADB not initialized, attempting to initialize...")
             if (!initialize()) {
-                logger.error("Cannot detect emulators: ADB initialization failed")
                 return emptyList()
             }
         }
         
         try {
             val devices = adbBridge?.devices ?: emptyArray()
-            logger.debug("Found ${devices.size} device(s) connected")
             
             val emulators = devices
                 .filter { it.isEmulator }
                 .map { device ->
-                    logger.debug("Processing emulator: ${device.serialNumber}")
                     convertToEmulatorInfo(device)
                 }
             
-            logger.info("✅ Found ${emulators.size} emulator(s)")
             emulators.forEach { emulator ->
-                logger.debug("  - ${emulator.fullDescription}")
             }
             
             return emulators
             
         } catch (e: Exception) {
-            logger.error("Failed to get connected emulators", e)
             return emptyList()
         }
     }
@@ -232,13 +200,10 @@ class EmulatorManager(project: Project) {
      * Get specific emulator by serial number.
      */
     fun getEmulator(serialNumber: String): EmulatorInfo? {
-        logger.debug("Looking for emulator: $serialNumber")
         
         return getConnectedEmulators()
             .find { it.serialNumber == serialNumber }
-            ?.also { logger.debug("Emulator found: ${it.fullDescription}") }
             ?: run {
-                logger.warn("Emulator not found: $serialNumber")
                 null
             }
     }
@@ -248,12 +213,9 @@ class EmulatorManager(project: Project) {
      * Returns the underlying IDevice for advanced operations.
      */
     fun getDevice(serialNumber: String): IDevice? {
-        logger.debug("Getting device: $serialNumber")
 
         if (!isInitialized) {
-            logger.warn("ADB not initialized, attempting to initialize...")
             if (!initialize()) {
-                logger.error("Cannot get device: ADB initialization failed")
                 return null
             }
         }
@@ -268,7 +230,6 @@ class EmulatorManager(project: Project) {
         val apiLevel = try {
             device.getProperty(IDevice.PROP_BUILD_API_LEVEL)?.toIntOrNull() ?: 0
         } catch (e: Exception) {
-            logger.warn("Failed to get API level for ${device.serialNumber}", e)
             0
         }
 
@@ -305,7 +266,6 @@ class EmulatorManager(project: Project) {
             try {
                 listener()
             } catch (e: Exception) {
-                logger.error("Error in device change listener", e)
             }
         }
     }

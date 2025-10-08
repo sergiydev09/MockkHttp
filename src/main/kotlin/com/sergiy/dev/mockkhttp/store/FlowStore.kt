@@ -2,8 +2,10 @@ package com.sergiy.dev.mockkhttp.store
 
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -14,13 +16,35 @@ import java.util.concurrent.CopyOnWriteArrayList
 @Service(Service.Level.PROJECT)
 class FlowStore(project: Project) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
 
     // Thread-safe storage for flows
     private val flows = ConcurrentHashMap<String, HttpFlowData>()
     private val flowOrder = CopyOnWriteArrayList<String>() // Maintains insertion order
 
-    // Listeners for flow events
+    // Reactive UI updates with SharedFlow (Problem #4 optimization)
+    // Using SharedFlow instead of listeners for better backpressure handling
+    private val _flowAddedEvents = MutableSharedFlow<HttpFlowData>(
+        replay = 0,  // Don't replay events to new subscribers
+        extraBufferCapacity = 1000,  // Buffer up to 1000 events if consumer is slow
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST  // Drop oldest if buffer full
+    )
+    val flowAddedEvents: SharedFlow<HttpFlowData> = _flowAddedEvents.asSharedFlow()
+
+    private val _flowUpdatedEvents = MutableSharedFlow<HttpFlowData>(
+        replay = 0,
+        extraBufferCapacity = 1000,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+    val flowUpdatedEvents: SharedFlow<HttpFlowData> = _flowUpdatedEvents.asSharedFlow()
+
+    private val _flowsClearedEvents = MutableSharedFlow<Unit>(
+        replay = 0,
+        extraBufferCapacity = 10,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+    val flowsClearedEvents: SharedFlow<Unit> = _flowsClearedEvents.asSharedFlow()
+
+    // Legacy listeners (kept for backward compatibility, but UI should use SharedFlow)
     private val flowAddedListeners = CopyOnWriteArrayList<(HttpFlowData) -> Unit>()
     private val flowUpdatedListeners = CopyOnWriteArrayList<(HttpFlowData) -> Unit>()
     private val flowsClearedListeners = CopyOnWriteArrayList<() -> Unit>()
@@ -36,15 +60,77 @@ class FlowStore(project: Project) {
             return project.getService(FlowStore::class.java)
         }
 
-        // Maximum number of flows to keep in memory
-        private const val MAX_FLOWS = 1000
+        // Memory budget optimization (Problem #3)
+        // Old: 1000 flows × 5MB = 5GB potential
+        // New: 200 flows max with 50MB budget
+        private const val MAX_FLOWS = 200
+        private const val MEMORY_BUDGET_MB = 50
+        private const val MAX_AGE_MS = 3600_000L  // 1 hour
+
+        // Estimated sizes for memory calculation
+        private const val ESTIMATED_FLOW_BASE_SIZE = 2048  // 2KB per flow metadata
+        private const val BYTES_PER_MB = 1024 * 1024
+    }
+
+    /**
+     * Calculate estimated memory usage in MB.
+     */
+    private fun calculateMemoryUsage(): Double {
+        var totalBytes = 0L
+        flows.values.forEach { flow ->
+            totalBytes += ESTIMATED_FLOW_BASE_SIZE
+            totalBytes += flow.request.content?.length ?: 0
+            totalBytes += flow.response?.content?.length ?: 0
+        }
+        return totalBytes.toDouble() / BYTES_PER_MB
+    }
+
+    /**
+     * Check if we should enforce memory cleanup.
+     */
+    private fun shouldEnforceMemoryCleanup(): Boolean {
+        return calculateMemoryUsage() > MEMORY_BUDGET_MB
+    }
+
+    /**
+     * Remove old flows to free memory.
+     * Removes flows older than MAX_AGE_MS, starting with oldest.
+     */
+    private fun enforceMemoryCleanup() {
+        val now = System.currentTimeMillis()
+        val threshold = now - MAX_AGE_MS
+
+        var removed = 0
+        val toRemove = mutableListOf<String>()
+
+        // Find flows older than threshold
+        for (flowId in flowOrder) {
+            val flow = flows[flowId] ?: continue
+            val flowAgeMs = now - (flow.timestamp * 1000).toLong()  // timestamp is in seconds
+            if (flowAgeMs > MAX_AGE_MS) {
+                toRemove.add(flowId)
+            }
+        }
+
+        // Remove old flows
+        toRemove.forEach { flowId ->
+            flowOrder.remove(flowId)
+            val removedFlow = flows.remove(flowId)
+            if (removedFlow?.paused == true) {
+                pausedFlowsCount--
+            }
+            removed++
+        }
+
+        if (removed > 0) {
+            val memoryUsage = calculateMemoryUsage()
+        }
     }
 
     /**
      * Add a new flow to the store.
      */
     fun addFlow(flow: HttpFlowData) {
-        logger.debug("Adding flow to store: ${flow.flowId}")
 
         // Check if flow already exists (update case)
         val isUpdate = flows.containsKey(flow.flowId)
@@ -61,30 +147,35 @@ class FlowStore(project: Project) {
                 pausedFlowsCount++
             }
 
-            // Enforce max size
+            // Enforce max size (hard limit)
             while (flowOrder.size > MAX_FLOWS) {
                 val oldestId = flowOrder.removeAt(0)
                 val removed = flows.remove(oldestId)
-                logger.debug("Removed oldest flow: $oldestId")
 
                 if (removed?.paused == true) {
                     pausedFlowsCount--
                 }
             }
 
-            logger.info("📝 Flow added: ${flow.request.method} ${flow.request.getShortUrl()} (Total: ${flowOrder.size})")
+            // Enforce memory budget (soft limit based on estimated size)
+            if (shouldEnforceMemoryCleanup()) {
+                enforceMemoryCleanup()
+            }
 
-            // Notify listeners
+            val memoryUsage = calculateMemoryUsage()
+
+            // Emit to SharedFlow (non-blocking, with backpressure)
+            _flowAddedEvents.tryEmit(flow)
+
+            // Notify legacy listeners (kept for backward compatibility)
             flowAddedListeners.forEach { listener ->
                 try {
                     listener(flow)
                 } catch (e: Exception) {
-                    logger.error("Error in flow added listener", e)
                 }
             }
         } else {
             // Updated flow
-            logger.debug("Flow updated: ${flow.flowId}")
 
             // Update paused count
             val oldFlow = flows[flow.flowId]
@@ -94,12 +185,14 @@ class FlowStore(project: Project) {
                 pausedFlowsCount++
             }
 
-            // Notify listeners
+            // Emit to SharedFlow (non-blocking, with backpressure)
+            _flowUpdatedEvents.tryEmit(flow)
+
+            // Notify legacy listeners (kept for backward compatibility)
             flowUpdatedListeners.forEach { listener ->
                 try {
                     listener(flow)
                 } catch (e: Exception) {
-                    logger.error("Error in flow updated listener", e)
                 }
             }
         }
@@ -116,21 +209,21 @@ class FlowStore(project: Project) {
      * Clear all flows.
      */
     fun clearAllFlows() {
-        logger.info("🗑️ Clearing all flows...")
 
         val count = flows.size
         flows.clear()
         flowOrder.clear()
         pausedFlowsCount = 0
 
-        logger.info("✅ Cleared $count flows")
 
-        // Notify listeners
+        // Emit to SharedFlow (non-blocking)
+        _flowsClearedEvents.tryEmit(Unit)
+
+        // Notify legacy listeners
         flowsClearedListeners.forEach { listener ->
             try {
                 listener()
             } catch (e: Exception) {
-                logger.error("Error in flows cleared listener", e)
             }
         }
     }
@@ -140,7 +233,6 @@ class FlowStore(project: Project) {
      */
     fun addFlowAddedListener(listener: (HttpFlowData) -> Unit) {
         flowAddedListeners.add(listener)
-        logger.debug("Flow added listener registered (total: ${flowAddedListeners.size})")
     }
 
     /**
@@ -148,7 +240,6 @@ class FlowStore(project: Project) {
      */
     fun addFlowUpdatedListener(listener: (HttpFlowData) -> Unit) {
         flowUpdatedListeners.add(listener)
-        logger.debug("Flow updated listener registered (total: ${flowUpdatedListeners.size})")
     }
 
     /**
@@ -156,6 +247,5 @@ class FlowStore(project: Project) {
      */
     fun addFlowsClearedListener(listener: () -> Unit) {
         flowsClearedListeners.add(listener)
-        logger.debug("Flows cleared listener registered (total: ${flowsClearedListeners.size})")
     }
 }

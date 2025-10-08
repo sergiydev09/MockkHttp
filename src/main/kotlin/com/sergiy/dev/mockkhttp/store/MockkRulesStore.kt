@@ -5,7 +5,6 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.project.Project
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.ModifiedResponseData
 import com.sergiy.dev.mockkhttp.model.QueryParam
 import com.sergiy.dev.mockkhttp.model.StructuredUrl
@@ -23,7 +22,6 @@ import com.sergiy.dev.mockkhttp.model.MatchType
 )
 class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesStore.State> {
 
-    private val logger = MockkHttpLogger.getInstance(project)
     private val collections = mutableMapOf<String, com.sergiy.dev.mockkhttp.model.MockkCollection>()
     private val rules = mutableListOf<MockkRule>()
     private val ruleAddedListeners = mutableListOf<(MockkRule) -> Unit>()
@@ -67,7 +65,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         // Migrate old rules without collectionId to "Default" collection
         migrateOldRulesToDefaultCollection()
 
-        logger.info("📚 Loaded ${collections.size} collection(s) and ${rules.size} mock rule(s) from storage")
     }
 
     /**
@@ -78,7 +75,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         val rulesWithoutCollection = rules.filter { it.collectionId.isEmpty() }
 
         if (rulesWithoutCollection.isNotEmpty()) {
-            logger.info("🔄 Migrating ${rulesWithoutCollection.size} old rule(s) to Default collection")
 
             // Find or create "Default" collection
             val defaultCollection = collections.values.find { it.name == "Default" }
@@ -91,7 +87,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
                         enabled = true
                     )
                     collections[newDefault.id] = newDefault
-                    logger.info("✨ Created Default collection for migrated rules")
                     newDefault
                 }
 
@@ -100,7 +95,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
                 rule.collectionId = defaultCollection.id
             }
 
-            logger.info("✅ Migration complete: ${rulesWithoutCollection.size} rule(s) migrated")
         }
     }
 
@@ -131,7 +125,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         )
 
         rules.add(rule)
-        logger.info("➕ Added mock rule: $name to collection: $collectionId")
 
         // Notify listeners
         ruleAddedListeners.forEach { it(rule) }
@@ -158,7 +151,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         )
 
         collections[collection.id] = collection
-        logger.info("📁 Added collection: $name (package: $packageName)")
 
         // Notify listeners
         collectionAddedListeners.forEach { it(collection) }
@@ -171,7 +163,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
      */
     fun removeCollection(collection: com.sergiy.dev.mockkhttp.model.MockkCollection, removeRules: Boolean = true) {
         collections.remove(collection.id)
-        logger.info("🗑️ Removed collection: ${collection.name}")
 
         if (removeRules) {
             val rulesToRemove = rules.filter { it.collectionId == collection.id }
@@ -179,7 +170,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
                 rules.remove(rule)
                 ruleRemovedListeners.forEach { listener -> listener(rule) }
             }
-            logger.info("   Also removed ${rulesToRemove.size} rule(s)")
         }
 
         // Notify listeners
@@ -219,7 +209,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
      */
     fun moveRule(rule: MockkRule, targetCollectionId: String) {
         rule.collectionId = targetCollectionId
-        logger.info("📦 Moved rule '${rule.name}' to collection: $targetCollectionId")
     }
 
     /**
@@ -231,7 +220,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
             collectionId = targetCollectionId
         )
         rules.add(duplicated)
-        logger.info("📋 Duplicated rule '${rule.name}' to collection: $targetCollectionId")
 
         // Notify listeners
         ruleAddedListeners.forEach { it(duplicated) }
@@ -249,7 +237,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         description?.let { collection.description = it }
         enabled?.let { collection.enabled = it }
 
-        logger.info("🔄 Updated collection: ${collection.name}")
     }
 
     /**
@@ -271,7 +258,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
      */
     fun removeRule(rule: MockkRule) {
         if (rules.remove(rule)) {
-            logger.info("➖ Removed mock rule: ${rule.name}")
             ruleRemovedListeners.forEach { it(rule) }
         }
     }
@@ -288,7 +274,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
      */
     fun setRuleEnabled(rule: MockkRule, enabled: Boolean) {
         rule.enabled = enabled
-        logger.info("${if (enabled) "✅" else "⏸"} Rule ${rule.name} ${if (enabled) "enabled" else "disabled"}")
     }
 
     /**
@@ -297,15 +282,9 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
      * Returns the actual MockkRule if a match is found.
      */
     fun findMatchingRuleObject(method: String, host: String, path: String, queryParams: Map<String, String>): MockkRule? {
-        logger.debug("🔍 Looking for match:")
-        logger.debug("   Method: $method")
-        logger.debug("   Host: $host")
-        logger.debug("   Path: $path")
-        logger.debug("   Query Params: $queryParams")
 
         // Get enabled collections
         val enabledCollections = collections.values.filter { it.enabled }
-        logger.debug("🔍 Searching in ${enabledCollections.size} enabled collection(s)")
 
         // Find matching rule without verbose logging
         for ((index, rule) in rules.withIndex()) {
@@ -330,10 +309,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
 
             if (matches) {
                 // Only log the winning rule
-                logger.debug("  ✅ Rule $index: ${rule.name} (Collection: ${ruleCollection.name})")
-                logger.debug("     Method: ${rule.method}, Host: ${rule.host}, Path: ${rule.path}")
-                logger.debug("     Query Params: ${rule.queryParams.map { "${it.key}=${it.value}" }}")
-                logger.debug("✅ MATCHED!")
                 return rule
             }
         }
@@ -344,8 +319,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
             rule.method.equals(method, ignoreCase = true) &&
             collections[rule.collectionId]?.enabled == true
         }
-        logger.debug("❌ No matching rule found")
-        logger.debug("   Checked $eligibleRules eligible rule(s)")
         return null
     }
 
@@ -404,13 +377,11 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
     private fun matchesStructured(rule: MockkRule, host: String, path: String, queryParams: Map<String, String>): Boolean {
         // 1. Match host (case-insensitive)
         if (!rule.host.equals(host, ignoreCase = true)) {
-            logger.debug("      ❌ Host mismatch: rule=${rule.host} actual=$host")
             return false
         }
 
         // 2. Match path (exact match)
         if (rule.path != path) {
-            logger.debug("      ❌ Path mismatch: rule=${rule.path} actual=$path")
             return false
         }
 
@@ -419,7 +390,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
             if (ruleParam.required) {
                 val actualValue = queryParams[ruleParam.key]
                 if (actualValue == null) {
-                    logger.debug("      ❌ Missing required param: ${ruleParam.key}")
                     return false
                 }
 
@@ -427,25 +397,19 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
                 when (ruleParam.matchType) {
                     MatchType.EXACT -> {
                         if (ruleParam.value != actualValue) {
-                            logger.debug("      ❌ Param value mismatch: ${ruleParam.key}")
-                            logger.debug("         Expected: ${ruleParam.value}")
-                            logger.debug("         Actual: $actualValue")
                             return false
                         }
                     }
                     MatchType.WILDCARD -> {
                         // Wildcard = accept any value, just check presence
-                        logger.debug("      ✅ Param ${ruleParam.key} matched (wildcard)")
                     }
                     MatchType.REGEX -> {
                         // Future: regex matching
                         try {
                             if (!Regex(ruleParam.value).matches(actualValue)) {
-                                logger.debug("      ❌ Param regex mismatch: ${ruleParam.key}")
                                 return false
                             }
                         } catch (_: Exception) {
-                            logger.debug("      ❌ Invalid regex for param: ${ruleParam.key}")
                             return false
                         }
                     }
@@ -454,7 +418,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         }
 
         // All checks passed!
-        logger.debug("      ✅ All checks passed")
         return true
     }
 
@@ -516,7 +479,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
             collections = collectionsData
         )
 
-        logger.info("📤 Exported ${collectionsToExport.size} collection(s)")
         return gson.toJson(exportData)
     }
 
@@ -529,9 +491,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
             val gson = com.google.gson.Gson()
             val exportData = gson.fromJson(json, com.sergiy.dev.mockkhttp.model.MockkCollectionExport::class.java)
 
-            logger.info("📥 Importing ${exportData.collections.size} collection(s) from JSON")
-            logger.info("   Plugin version: ${exportData.pluginVersion}")
-            logger.info("   Export date: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(java.util.Date(exportData.exportDate))}")
 
             val importedCollections = mutableListOf<com.sergiy.dev.mockkhttp.model.MockkCollection>()
 
@@ -552,7 +511,6 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
                         newName = "${collection.name} (Imported $counter)"
                         counter++
                     }
-                    logger.info("   ⚠️  Name conflict detected: renaming '${collection.name}' to '$newName'")
                     collection.name = newName
                 }
 
@@ -589,17 +547,14 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
                     ruleAddedListeners.forEach { listener -> listener(rule) }
                 }
 
-                logger.info("   ✅ Imported collection '${collection.name}' with ${collectionData.rules.size} rule(s)")
 
                 // Notify listeners for collection
                 collectionAddedListeners.forEach { it(collection) }
             }
 
-            logger.info("✅ Import complete: ${importedCollections.size} collection(s), total ${exportData.collections.sumOf { it.rules.size }} rule(s)")
             return importedCollections
 
         } catch (e: Exception) {
-            logger.error("Failed to import collections from JSON", e)
             throw IllegalArgumentException("Failed to parse JSON: ${e.message}", e)
         }
     }

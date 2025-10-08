@@ -11,7 +11,6 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import com.sergiy.dev.mockkhttp.model.ModifiedResponseData
 import java.awt.*
@@ -32,7 +31,6 @@ class DebugInterceptDialog(
     private val flow: HttpFlowData
 ) : DialogWrapper(project) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
     private val mockkRulesStore = com.sergiy.dev.mockkhttp.store.MockkRulesStore.getInstance(project)
 
     // Response editing fields
@@ -146,7 +144,6 @@ class DebugInterceptDialog(
         // Add listeners to track modifications AFTER init() so we have the button reference
         addModificationListeners()
 
-        logger.info("Debug dialog opened for flow: ${flow.flowId}")
     }
 
     private fun addModificationListeners() {
@@ -323,7 +320,6 @@ class DebugInterceptDialog(
 
         override fun doAction(e: java.awt.event.ActionEvent?) {
             val responseType = if (flow.mockApplied) "mocked" else "remote"
-            logger.info("Continuing with $responseType response for flow: ${flow.flowId}")
             actionTaken = ActionType.CONTINUE_REMOTE
             close(OK_EXIT_CODE)
         }
@@ -342,7 +338,6 @@ class DebugInterceptDialog(
         }
 
         override fun doAction(e: java.awt.event.ActionEvent?) {
-            logger.info("Continuing with modified response for flow: ${flow.flowId}")
             actionTaken = ActionType.CONTINUE_MODIFIED
             close(OK_EXIT_CODE)
         }
@@ -367,7 +362,6 @@ class DebugInterceptDialog(
                 content = content
             )
         } catch (e: Exception) {
-            logger.error("Failed to parse modified response", e)
             null
         }
     }
@@ -425,7 +419,6 @@ class DebugInterceptDialog(
 
         // Create collection (no package filter in debug dialog - user can specify in CreateMockDialog later)
         val newCollection = mockkRulesStore.addCollection(name, "", description)
-        logger.info("Created new collection: $name")
 
         // Add to combo box and select it
         collectionComboBox.addItem(newCollection)

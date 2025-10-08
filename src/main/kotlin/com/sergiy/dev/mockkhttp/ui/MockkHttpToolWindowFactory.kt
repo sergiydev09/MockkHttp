@@ -5,7 +5,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 
 /**
  * Factory for creating the MockkHttp Tool Window.
@@ -16,11 +15,8 @@ import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
  * without waiting for the indexing process to complete.
  */
 class MockkHttpToolWindowFactory : ToolWindowFactory, DumbAware {
-    
+
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val logger = MockkHttpLogger.getInstance(project)
-        logger.info("Creating MockkHttp Tool Window content...")
-        
         try {
             // Create main window content
             val toolWindowContent = MockkHttpToolWindow(project)
@@ -31,9 +27,7 @@ class MockkHttpToolWindowFactory : ToolWindowFactory, DumbAware {
             
             toolWindow.contentManager.addContent(content)
             
-            logger.info("MockkHttp Tool Window content created successfully")
         } catch (e: Exception) {
-            logger.error("Failed to create Tool Window content", e)
             throw e
         }
     }

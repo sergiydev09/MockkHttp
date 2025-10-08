@@ -12,10 +12,11 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.adb.*
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import com.sergiy.dev.mockkhttp.proxy.OkHttpInterceptorServer
 import com.sergiy.dev.mockkhttp.store.FlowStore
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.io.File
@@ -27,7 +28,6 @@ import javax.swing.*
  */
 class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
     private val emulatorManager = EmulatorManager.getInstance(project)
     private val appManager = AppManager.getInstance(project)
     private val okHttpInterceptorServer = OkHttpInterceptorServer.getInstance(project)
@@ -56,6 +56,9 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private var currentMode: Mode = Mode.STOPPED
     private var searchQuery: String = ""
 
+    // Coroutine scope for UI updates (Problem #4 optimization)
+    private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     enum class Mode {
         STOPPED,
         RECORDING,      // Recording without debug
@@ -65,7 +68,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     init {
-        logger.info("Initializing Inspector Panel...")
 
         // Initialize combo boxes
         emulatorComboBox = ComboBox<EmulatorInfo>().apply {
@@ -227,35 +229,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         // Setup layout
         setupLayout()
 
-        // Listen to flow changes
-        flowStore.addFlowAddedListener { flow ->
-            SwingUtilities.invokeLater {
-                allFlows.add(flow)
-                // Apply filter
-                if (matchesSearchQuery(flow, searchQuery)) {
-                    flowListModel.addElement(flow)
-                }
-            }
-        }
-
-        flowStore.addFlowUpdatedListener { updatedFlow ->
-            SwingUtilities.invokeLater {
-                // Update in allFlows
-                val indexInAll = allFlows.indexOfFirst { it.flowId == updatedFlow.flowId }
-                if (indexInAll >= 0) {
-                    allFlows[indexInAll] = updatedFlow
-                }
-
-                // Update in filtered list if present
-                for (i in 0 until flowListModel.size()) {
-                    val existingFlow = flowListModel.getElementAt(i)
-                    if (existingFlow.flowId == updatedFlow.flowId) {
-                        flowListModel.setElementAt(updatedFlow, i)
-                        break
-                    }
-                }
-            }
-        }
+        // Listen to flow changes using SharedFlow with batching and debouncing (Problem #4)
+        // Old: 100 UI updates/second saturate EDT
+        // New: Batched updates every 300ms (2-3 updates/second)
+        setupFlowListeners()
 
         flowStore.addFlowsClearedListener {
             SwingUtilities.invokeLater {
@@ -269,7 +246,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             initializeAdb()
         }
 
-        logger.info("✅ Inspector Panel initialized")
     }
 
     private fun setupLayout() {
@@ -369,25 +345,121 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun initializeAdb() {
-        logger.info("⚙️ Initializing ADB...")
         updateStatus("Initializing ADB...", JBColor.ORANGE)
 
         if (emulatorManager.initialize()) {
-            logger.info("✅ ADB initialized successfully")
             updateStatus("Ready", JBColor.GREEN)
 
             // Register device change listener for auto-refresh
             emulatorManager.addDeviceChangeListener {
                 SwingUtilities.invokeLater {
-                    logger.debug("Device change detected, refreshing emulators...")
                     refreshEmulators()
                 }
             }
 
             refreshEmulators()
         } else {
-            logger.error("❌ Failed to initialize ADB")
             updateStatus("ADB initialization failed", JBColor.RED)
+        }
+    }
+
+    /**
+     * Setup flow listeners using SharedFlow with batching and debouncing (Problem #4).
+     * This prevents EDT saturation when receiving 100+ flows/second.
+     */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private fun setupFlowListeners() {
+        // Flow Added Events: Buffer and debounce to batch updates
+        uiScope.launch {
+            flowStore.flowAddedEvents
+                .buffer(capacity = 100)  // Buffer up to 100 events
+                .debounce(300)  // Wait 300ms after last event before processing
+                .collect { flow ->
+                    SwingUtilities.invokeLater {
+                        allFlows.add(flow)
+                        // Apply filter
+                        if (matchesSearchQuery(flow, searchQuery)) {
+                            flowListModel.addElement(flow)
+                        }
+                    }
+                }
+        }
+
+        // For better batching, also collect in chunks
+        uiScope.launch {
+            flowStore.flowAddedEvents
+                .chunked(50, 500)  // Collect up to 50 flows or wait 500ms
+                .collect { flows ->
+                    if (flows.isNotEmpty()) {
+                        SwingUtilities.invokeLater {
+                            flows.forEach { flow ->
+                                allFlows.add(flow)
+                                if (matchesSearchQuery(flow, searchQuery)) {
+                                    flowListModel.addElement(flow)
+                                }
+                            }
+                        }
+                    }
+                }
+        }
+
+        // Flow Updated Events: Debounce updates
+        uiScope.launch {
+            flowStore.flowUpdatedEvents
+                .debounce(200)  // Debounce updates
+                .collect { updatedFlow ->
+                    SwingUtilities.invokeLater {
+                        // Update in allFlows
+                        val indexInAll = allFlows.indexOfFirst { it.flowId == updatedFlow.flowId }
+                        if (indexInAll >= 0) {
+                            allFlows[indexInAll] = updatedFlow
+                        }
+
+                        // Update in filtered list if present
+                        for (i in 0 until flowListModel.size()) {
+                            val existingFlow = flowListModel.getElementAt(i)
+                            if (existingFlow.flowId == updatedFlow.flowId) {
+                                flowListModel.setElementAt(updatedFlow, i)
+                                break
+                            }
+                        }
+                    }
+                }
+        }
+
+        // Flow Cleared Events: No batching needed (infrequent)
+        uiScope.launch {
+            flowStore.flowsClearedEvents.collect {
+                SwingUtilities.invokeLater {
+                    allFlows.clear()
+                    flowListModel.clear()
+                }
+            }
+        }
+    }
+
+    /**
+     * Helper extension for chunked flow collection with timeout.
+     */
+    private fun <T> Flow<T>.chunked(maxSize: Int, timeoutMs: Long): Flow<List<T>> = flow {
+        val buffer = mutableListOf<T>()
+        var lastEmitTime = System.currentTimeMillis()
+
+        collect { value ->
+            buffer.add(value)
+            val now = System.currentTimeMillis()
+
+            // Emit if buffer is full or timeout reached
+            if (buffer.size >= maxSize || (now - lastEmitTime) >= timeoutMs) {
+                emit(buffer.toList())
+                buffer.clear()
+                lastEmitTime = now
+            }
+        }
+
+        // Emit remaining items
+        if (buffer.isNotEmpty()) {
+            emit(buffer.toList())
         }
     }
 
@@ -405,21 +477,17 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             val index = emulators.indexOfFirst { it.serialNumber == previousSelection.serialNumber }
             if (index >= 0) {
                 emulatorComboBox.selectedIndex = index
-                logger.debug("Restored emulator selection: ${previousSelection.displayName}")
             }
         } else if (emulators.isNotEmpty() && selectedEmulator == null) {
             // Only auto-select first if nothing was selected before
             emulatorComboBox.selectedIndex = 0
-            logger.debug("Auto-selected first emulator")
         } else if (previousSelection != null && emulators.none { it.serialNumber == previousSelection.serialNumber }) {
             // Previously selected emulator is now disconnected
-            logger.warn("⚠️ Previously selected emulator disconnected")
             selectedEmulator = null
             selectedApp = null
 
             // Stop interceptor if running
             if (currentMode != Mode.STOPPED) {
-                logger.warn("⚠️ Stopping interceptor due to emulator disconnection")
                 stop()
             }
         }
@@ -428,7 +496,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun onEmulatorSelected() {
         selectedEmulator = emulatorComboBox.selectedItem as? EmulatorInfo
         selectedEmulator?.let { emulator ->
-            logger.info("📱 Emulator selected: ${emulator.fullDescription}")
             refreshApps()
         }
         updateButtonStates()
@@ -436,15 +503,38 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun refreshApps() {
         val emulator = selectedEmulator ?: return
-        val apps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
 
-        appComboBox.removeAllItems()
-        apps.forEach { app ->
-            appComboBox.addItem(app)
-        }
+        // Use coroutine to fetch apps asynchronously (Problem #5)
+        // Old: Blocked EDT for 250s (4+ minutes)
+        // New: Non-blocking, 5-10s in background
+        updateStatus("Loading apps...", JBColor.ORANGE)
+        refreshAppsButton.isEnabled = false
 
-        if (apps.isNotEmpty()) {
-            appComboBox.selectedIndex = 0
+        uiScope.launch(Dispatchers.IO) {
+            try {
+                // Fetch apps in background (suspending call, runs on IO dispatcher)
+                val apps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
+
+                // Update UI on EDT
+                SwingUtilities.invokeLater {
+                    appComboBox.removeAllItems()
+                    apps.forEach { app ->
+                        appComboBox.addItem(app)
+                    }
+
+                    if (apps.isNotEmpty()) {
+                        appComboBox.selectedIndex = 0
+                    }
+
+                    updateStatus("Loaded ${apps.size} apps", JBColor.GREEN)
+                    refreshAppsButton.isEnabled = true
+                }
+            } catch (e: Exception) {
+                SwingUtilities.invokeLater {
+                    updateStatus("Failed to load apps", JBColor.RED)
+                    refreshAppsButton.isEnabled = true
+                }
+            }
         }
     }
 
@@ -491,25 +581,18 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         val newMode = getCurrentSelectedMode()
         if (newMode != currentMode && newMode != Mode.STOPPED) {
+            // Show "Switching..." feedback first
+            val switchingText = when (newMode) {
+                Mode.RECORDING -> "Switching to Recording..."
+                Mode.DEBUG -> "Switching to Debug Mode..."
+                Mode.MOCKK -> "Switching to Mockk Mode..."
+                Mode.MOCKK_DEBUG -> "Switching to Mockk Debug Mode..."
+                Mode.STOPPED -> "Stopping..."
+            }
+            updateStatus(switchingText, JBColor.ORANGE)
+
             // Update UI state
             currentMode = newMode
-
-            val statusText = when (newMode) {
-                Mode.RECORDING -> "Recording..."
-                Mode.DEBUG -> "Debug Mode (Recording + Pause)"
-                Mode.MOCKK -> "Mockk Mode"
-                Mode.MOCKK_DEBUG -> "Mockk Debug Mode (Mock + Pause)"
-                Mode.STOPPED -> "Stopped"
-            }
-            val statusColor = when (newMode) {
-                Mode.RECORDING -> JBColor.GREEN
-                Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
-                Mode.MOCKK -> JBColor.ORANGE
-                Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
-                Mode.STOPPED -> JBColor.GRAY
-            }
-
-            updateStatus(statusText, statusColor)
 
             // Update server mode
             val serverMode = when (newMode) {
@@ -520,7 +603,27 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 Mode.STOPPED -> return
             }
             okHttpInterceptorServer.setMode(serverMode)
-            logger.info("🔄 Mode changed to ${newMode.name} while running")
+
+            // Show "Ready" feedback after a short delay
+            Timer(300) {
+                SwingUtilities.invokeLater {
+                    val statusText = when (newMode) {
+                        Mode.RECORDING -> "Recording..."
+                        Mode.DEBUG -> "Debug Mode (Recording + Pause)"
+                        Mode.MOCKK -> "Mockk Mode - Ready"
+                        Mode.MOCKK_DEBUG -> "Mockk Debug Mode - Ready"
+                        Mode.STOPPED -> "Stopped"
+                    }
+                    val statusColor = when (newMode) {
+                        Mode.RECORDING -> JBColor.GREEN
+                        Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
+                        Mode.MOCKK -> JBColor.ORANGE
+                        Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
+                        Mode.STOPPED -> JBColor.GRAY
+                    }
+                    updateStatus(statusText, statusColor)
+                }
+            }.apply { isRepeats = false }.start()
         }
     }
 
@@ -534,13 +637,24 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun startInterceptor() {
         val mode = getCurrentSelectedMode()
         if (mode == Mode.STOPPED) {
-            logger.error("Invalid mode selection")
             return
         }
+
+        // Show "Starting..." feedback first
+        val startingText = when (mode) {
+            Mode.RECORDING -> "Starting Recording..."
+            Mode.DEBUG -> "Starting Debug Mode..."
+            Mode.MOCKK -> "Starting Mockk Mode..."
+            Mode.MOCKK_DEBUG -> "Starting Mockk Debug Mode..."
+            Mode.STOPPED -> "Starting..."
+        }
+        updateStatus(startingText, JBColor.ORANGE)
+
         start(mode)
     }
 
     private fun stopInterceptor() {
+        updateStatus("Stopping...", JBColor.ORANGE)
         stop()
     }
 
@@ -549,14 +663,11 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         object : Task.Backgroundable(project, "Starting ${mode.name} Mode", true) {
             override fun run(indicator: ProgressIndicator) {
                 try {
-                    logger.info("🔌 Starting ${mode.name} Mode...")
 
                     // Get package name filter from selected app
                     val packageNameFilter = selectedApp?.packageName
                     if (packageNameFilter != null) {
-                        logger.info("📦 Filtering flows by package: $packageNameFilter")
                     } else {
-                        logger.warn("⚠️  No app selected, will receive ALL flows from all apps")
                     }
 
                     // Map mode to OkHttpInterceptorServer.Mode
@@ -573,37 +684,36 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         throw Exception("Failed to start OkHttp Interceptor Server")
                     }
 
-                    logger.info("✅ OkHttp Interceptor Server started on port ${OkHttpInterceptorServer.SERVER_PORT}")
-                    logger.info("📱 Waiting for app connections...")
-                    logger.info("   Make sure your app includes the MockkHttp Gradle plugin!")
 
                     // Update UI
                     SwingUtilities.invokeLater {
                         currentMode = mode
-
-                        val statusText = when (mode) {
-                            Mode.RECORDING -> "Recording..."
-                            Mode.DEBUG -> "Debug Mode (Recording + Pause)"
-                            Mode.MOCKK -> "Mockk Mode"
-                            Mode.MOCKK_DEBUG -> "Mockk Debug Mode (Mock + Pause)"
-                            Mode.STOPPED -> "Stopped"
-                        }
-                        val statusColor = when (mode) {
-                            Mode.RECORDING -> JBColor.GREEN
-                            Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
-                            Mode.MOCKK -> JBColor.ORANGE
-                            Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
-                            Mode.STOPPED -> JBColor.GRAY
-                        }
-
-                        updateStatus(statusText, statusColor)
                         updateButtonStates()
+
+                        // Show "Ready" feedback after a short delay
+                        Timer(300) {
+                            SwingUtilities.invokeLater {
+                                val statusText = when (mode) {
+                                    Mode.RECORDING -> "Recording..."
+                                    Mode.DEBUG -> "Debug Mode (Recording + Pause)"
+                                    Mode.MOCKK -> "Mockk Mode - Ready"
+                                    Mode.MOCKK_DEBUG -> "Mockk Debug Mode - Ready"
+                                    Mode.STOPPED -> "Stopped"
+                                }
+                                val statusColor = when (mode) {
+                                    Mode.RECORDING -> JBColor.GREEN
+                                    Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
+                                    Mode.MOCKK -> JBColor.ORANGE
+                                    Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
+                                    Mode.STOPPED -> JBColor.GRAY
+                                }
+                                updateStatus(statusText, statusColor)
+                            }
+                        }.apply { isRepeats = false }.start()
                     }
 
-                    logger.info("✅ ${mode.name} mode started")
 
                 } catch (e: Exception) {
-                    logger.error("Failed to start ${mode.name} mode", e)
                     okHttpInterceptorServer.stop()
 
                     SwingUtilities.invokeLater {
@@ -628,7 +738,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             override fun run(indicator: ProgressIndicator) {
                 try {
                     okHttpInterceptorServer.stop()
-                    logger.info("🔌 Stopped OkHttp Interceptor Server")
 
                     SwingUtilities.invokeLater {
                         currentMode = Mode.STOPPED
@@ -636,10 +745,8 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         updateButtonStates()
                     }
 
-                    logger.info("✅ Stopped")
 
                 } catch (e: Exception) {
-                    logger.error("Error stopping interceptor", e)
                 }
             }
         }.queue()
@@ -647,11 +754,9 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun clearFlows() {
         flowStore.clearAllFlows()
-        logger.info("🗑️ Cleared all flows")
     }
 
     private fun exportFlows() {
-        logger.info("📤 Export flows requested")
 
         val flows = flowStore.getAllFlows()
         if (flows.isEmpty()) {
@@ -688,7 +793,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 // Write to file
                 file.writeText(json)
 
-                logger.info("✅ Exported ${flows.size} flows to ${file.absolutePath}")
                 JOptionPane.showMessageDialog(
                     this,
                     "Successfully exported ${flows.size} flows to:\n${file.absolutePath}",
@@ -696,7 +800,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     JOptionPane.INFORMATION_MESSAGE
                 )
             } catch (e: Exception) {
-                logger.error("Failed to export flows", e)
                 JOptionPane.showMessageDialog(
                     this,
                     "Failed to export flows: ${e.message}",
@@ -785,7 +888,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             targetPackageName = packageName
         )
         if (dialog.showAndGet()) {
-            logger.info("Mock rule created from flow")
         }
     }
 
@@ -798,7 +900,6 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             targetPackageName = packageName
         )
         if (dialog.showAndGet()) {
-            logger.info("${flows.size} mock rules created from flows")
         }
     }
 

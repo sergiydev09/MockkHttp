@@ -5,7 +5,6 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Desktop
@@ -24,10 +23,8 @@ private fun Color.toHex(): String {
  */
 class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
 
     init {
-        logger.info("Initializing Help Panel...")
 
         border = JBUI.Borders.empty(15)
 
@@ -108,9 +105,9 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                 <h1>🚀 MockkHttp Setup Guide</h1>
 
                 <div class="note">
-                    <strong>⚠️ IMPORTANT - Version 1.4.2 Update Required</strong>
+                    <strong>⚠️ IMPORTANT - Version 1.4.4 Update Required</strong>
                     <p>
-                        This version (1.4.2) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
+                        This version (1.4.4) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
                         Just apply the Gradle plugin and it handles everything.
                     </p>
                     <p>
@@ -130,7 +127,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     <pre>plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.4.2"
+    id("io.github.sergiydev09.mockkhttp") version "1.4.4"
 }
 
 // That's it! No dependencies needed.
@@ -219,7 +216,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
                 <br/><br/>
                 <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.4.1 | Fully Automatic Setup | Built for Android Development
+                    MockkHttp v1.4.4 | Fully Automatic Setup | Built for Android Development
                 </p>
             </body>
             </html>
@@ -235,7 +232,6 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     try {
                         Desktop.getDesktop().browse(URI(e.url.toString()))
                     } catch (ex: Exception) {
-                        logger.error("Failed to open URL: ${e.url}", ex)
                     }
                 }
             }
@@ -247,6 +243,5 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
         add(scrollPane, BorderLayout.CENTER)
 
-        logger.info("✅ Help Panel initialized")
     }
 }

@@ -9,7 +9,6 @@ import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import com.sergiy.dev.mockkhttp.model.MockkCollection
 import com.sergiy.dev.mockkhttp.model.ModifiedResponseData
@@ -29,7 +28,6 @@ class BatchCreateMockDialog(
     private val targetPackageName: String? = null
 ) : DialogWrapper(project) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
     private val mockkRulesStore = MockkRulesStore.getInstance(project)
 
     private val collectionComboBox: ComboBox<MockkCollection>
@@ -191,7 +189,6 @@ class BatchCreateMockDialog(
             val packageName = newCollectionPackageField.text.trim()
 
             val newCollection = mockkRulesStore.addCollection(name, packageName, description = "")
-            logger.info("✅ Created new collection: $name")
             newCollection
         } else {
             collectionComboBox.selectedItem as? MockkCollection
@@ -221,7 +218,6 @@ class BatchCreateMockDialog(
 
                 // Check if we already processed this endpoint in THIS batch
                 if (processedEndpoints.contains(endpointKey)) {
-                    logger.debug("Skipping duplicate in batch: ${flow.request.method} ${structuredUrl.host}${structuredUrl.path}")
                     skippedCount++
                     continue
                 }
@@ -234,7 +230,6 @@ class BatchCreateMockDialog(
                 }
 
                 if (existsInCollection) {
-                    logger.debug("Skipping duplicate rule (exists in collection): ${flow.request.method} ${structuredUrl.host}${structuredUrl.path}")
                     skippedCount++
                     continue
                 }
@@ -272,17 +267,13 @@ class BatchCreateMockDialog(
                 processedEndpoints.add(endpointKey)
                 successCount++
             } catch (e: Exception) {
-                logger.error("Failed to create mock rule for ${flow.request.url}", e)
                 errorCount++
             }
         }
 
-        logger.info("✅ Created $successCount mock rules in collection '${collection.name}'")
         if (skippedCount > 0) {
-            logger.info("⏭️ Skipped $skippedCount duplicate rules")
         }
         if (errorCount > 0) {
-            logger.warn("⚠️ Failed to create $errorCount mock rules")
         }
 
         val message = buildString {

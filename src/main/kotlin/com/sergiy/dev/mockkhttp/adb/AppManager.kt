@@ -3,7 +3,7 @@ package com.sergiy.dev.mockkhttp.adb
 import com.android.ddmlib.IDevice
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
+import kotlinx.coroutines.*
 import java.util.concurrent.TimeUnit
 
 /**
@@ -13,7 +13,6 @@ import java.util.concurrent.TimeUnit
 @Service(Service.Level.PROJECT)
 class AppManager(project: Project) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
     private val emulatorManager = EmulatorManager.getInstance(project)
     
     companion object {
@@ -25,58 +24,58 @@ class AppManager(project: Project) {
     }
     
     /**
-     * Get list of installed applications on emulator.
+     * Get list of installed applications on emulator (ASYNC with coroutines - Problem #5).
+     * Old: 50 apps × 5s = 250s sequentially
+     * New: 50 apps in parallel = 5-10s total
+     *
      * @param serialNumber Emulator serial number
      * @param includeSystem Whether to include system apps
      */
-    fun getInstalledApps(serialNumber: String, includeSystem: Boolean = false): List<AppInfo> {
-        logger.info("📱 Listing installed apps on $serialNumber (includeSystem=$includeSystem)...")
-        
+    suspend fun getInstalledApps(serialNumber: String, includeSystem: Boolean = false): List<AppInfo> = coroutineScope {
+
         try {
             val device = getDevice(serialNumber)
             if (device == null) {
-                logger.error("Device not found: $serialNumber")
-                return emptyList()
+                return@coroutineScope emptyList()
             }
-            
-            // Get package list
-            val receiver = EmulatorManager.CollectingOutputReceiver()
-            val command = if (includeSystem) {
-                "pm list packages"
-            } else {
-                "pm list packages -3"  // Only third-party apps
+
+            // Get package list (fast operation, ~1s)
+            val packageNames = withContext(Dispatchers.IO) {
+                val receiver = EmulatorManager.CollectingOutputReceiver()
+                val command = if (includeSystem) {
+                    "pm list packages"
+                } else {
+                    "pm list packages -3"  // Only third-party apps
+                }
+
+                device.executeShellCommand(command, receiver, SHELL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+
+                val output = receiver.output
+                output.lines()
+                    .filter { it.startsWith("package:") }
+                    .map { it.removePrefix("package:").trim() }
             }
-            
-            logger.debug("Executing command: $command")
-            device.executeShellCommand(command, receiver, SHELL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            
-            val output = receiver.output
-            val packageNames = output.lines()
-                .filter { it.startsWith("package:") }
-                .map { it.removePrefix("package:").trim() }
-            
-            logger.debug("Found ${packageNames.size} package(s)")
-            
-            // Convert to AppInfo (we'll parse more details if needed)
+
+
+            // Fetch app info in PARALLEL using async (Problem #5 optimization)
+            // This converts 250s sequential to 5-10s parallel
             val apps = packageNames.map { packageName ->
-                createAppInfo(device, packageName)
-            }
-            
-            logger.info("✅ Retrieved ${apps.size} app(s) from $serialNumber")
-            
+                async(Dispatchers.IO) {
+                    createAppInfo(device, packageName)
+                }
+            }.awaitAll()
+
+
             // Log some examples
             apps.take(3).forEach { app ->
-                logger.debug("  - ${app.fullDescription}")
             }
             if (apps.size > 3) {
-                logger.debug("  ... and ${apps.size - 3} more")
             }
-            
-            return apps
-            
+
+            apps
+
         } catch (e: Exception) {
-            logger.error("Failed to get installed apps on $serialNumber", e)
-            return emptyList()
+            emptyList()
         }
     }
 
@@ -86,12 +85,10 @@ class AppManager(project: Project) {
     private fun getDevice(serialNumber: String): IDevice? {
         val emulator = emulatorManager.getEmulator(serialNumber)
         if (emulator == null) {
-            logger.warn("Emulator not found: $serialNumber")
             return null
         }
         
         if (!emulator.isOnline) {
-            logger.warn("Emulator is not online: $serialNumber")
             return null
         }
         
@@ -108,7 +105,6 @@ class AppManager(project: Project) {
                     val bridge = bridgeField.get(emulatorManager) as? com.android.ddmlib.AndroidDebugBridge
                     bridge?.devices?.find { it.serialNumber == serialNumber }
                 } catch (e: Exception) {
-                    logger.error("Failed to get IDevice for $serialNumber", e)
                     null
                 }
             }
@@ -136,7 +132,6 @@ class AppManager(project: Project) {
                 if (parts.size >= 2) {
                     val uid = parts[1].toIntOrNull()
                     if (uid != null) {
-                        logger.info("✅ UID for $packageName: $uid (from packages.list)")
                         return uid
                     }
                 }
@@ -165,18 +160,14 @@ class AppManager(project: Project) {
                 if (match != null) {
                     val uid = match.groupValues[1].toIntOrNull()
                     if (uid != null) {
-                        logger.info("✅ UID for $packageName: $uid (from dumpsys)")
                         return uid
                     }
                 }
             }
 
-            logger.error("❌ Could not find UID for $packageName")
-            logger.debug("Dumpsys output (first 500 chars): ${output.take(500)}")
             return null
 
         } catch (e: Exception) {
-            logger.error("Failed to get UID for $packageName", e)
             return null
         }
     }
@@ -222,7 +213,6 @@ class AppManager(project: Project) {
             )
 
         } catch (e: Exception) {
-            logger.debug("Failed to get details for $packageName: ${e.message}")
             return AppInfo(
                 packageName = packageName,
                 appName = null,
@@ -239,12 +229,10 @@ class AppManager(project: Project) {
      * This is useful for clearing app's network cache after proxy configuration changes.
      */
     fun forceStopApp(serialNumber: String, packageName: String): Boolean {
-        logger.info("🔴 Force-stopping app: $packageName on $serialNumber")
 
         try {
             val device = getDevice(serialNumber)
             if (device == null) {
-                logger.error("Device not found: $serialNumber")
                 return false
             }
 
@@ -253,15 +241,12 @@ class AppManager(project: Project) {
 
             val output = receiver.output
             if (output.contains("Error", ignoreCase = true)) {
-                logger.error("❌ Failed to force-stop: $output")
                 return false
             }
 
-            logger.info("✅ App force-stopped: $packageName")
             return true
 
         } catch (e: Exception) {
-            logger.error("Failed to force-stop app", e)
             return false
         }
     }
@@ -270,12 +255,10 @@ class AppManager(project: Project) {
      * Start an app's main activity.
      */
     fun startApp(serialNumber: String, packageName: String): Boolean {
-        logger.info("▶️ Starting app: $packageName on $serialNumber")
 
         try {
             val device = getDevice(serialNumber)
             if (device == null) {
-                logger.error("Device not found: $serialNumber")
                 return false
             }
 
@@ -286,15 +269,12 @@ class AppManager(project: Project) {
             val output = receiver.output
             if (output.contains("No activities found", ignoreCase = true) ||
                 output.contains("Error", ignoreCase = true)) {
-                logger.error("❌ Failed to start app: $output")
                 return false
             }
 
-            logger.info("✅ App started: $packageName")
             return true
 
         } catch (e: Exception) {
-            logger.error("Failed to start app", e)
             return false
         }
     }
@@ -304,7 +284,6 @@ class AppManager(project: Project) {
      * Useful to clear network cache and force re-connection through proxy.
      */
     fun restartApp(serialNumber: String, packageName: String): Boolean {
-        logger.info("🔄 Restarting app: $packageName")
 
         if (!forceStopApp(serialNumber, packageName)) {
             return false

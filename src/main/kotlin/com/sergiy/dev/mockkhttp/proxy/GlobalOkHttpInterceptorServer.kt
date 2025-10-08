@@ -3,15 +3,15 @@ package com.sergiy.dev.mockkhttp.proxy
 import com.google.gson.Gson
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
-import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import java.io.BufferedReader
 import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
 import java.util.concurrent.CopyOnWriteArrayList
-import kotlin.concurrent.thread
 
 /**
  * Global application-level server that listens for connections from MockkHttpInterceptor in Android apps.
@@ -22,12 +22,17 @@ import kotlin.concurrent.thread
 @Service(Service.Level.APP)
 class GlobalOkHttpInterceptorServer {
 
-    private val logger = Logger.getInstance(GlobalOkHttpInterceptorServer::class.java)
     private val gson = Gson()
 
     private var serverSocket: ServerSocket? = null
     private var isRunning = false
-    private var serverThread: Thread? = null
+
+    // Coroutines infrastructure for high-throughput request handling
+    private var serverScope: CoroutineScope? = null
+    private var requestChannel: Channel<Socket>? = null
+
+    // Worker configuration
+    private val numWorkers = 50  // 50 coroutines can handle 1000s of requests with minimal memory
 
     // Registry of projects listening for flows (LinkedHashMap maintains insertion order)
     private val registeredProjects = java.util.Collections.synchronizedMap(
@@ -103,26 +108,43 @@ class GlobalOkHttpInterceptorServer {
     @Synchronized
     fun ensureStarted(): Boolean {
         if (isRunning) {
-            logger.info("Global interceptor server already running on port $SERVER_PORT")
             return true
         }
 
-        logger.info("🚀 Starting Global OkHttp Interceptor Server on port $SERVER_PORT")
 
         return try {
             serverSocket = ServerSocket(SERVER_PORT)
             isRunning = true
 
-            serverThread = thread(isDaemon = true, name = "MockkHttp-Global-Server") {
-                runServer()
+            // Create coroutine scope with SupervisorJob (failures don't cascade)
+            serverScope = CoroutineScope(
+                SupervisorJob() + Dispatchers.IO + CoroutineName("MockkHttp-GlobalServer")
+            )
+
+            // Create channel with capacity limit (backpressure)
+            // If channel is full, accept() will suspend, naturally slowing down incoming connections
+            requestChannel = Channel<Socket>(capacity = 500)
+
+            // Start acceptor coroutine (accepts new connections)
+            serverScope?.launch {
+                runAcceptor()
             }
 
-            logger.info("✅ Global interceptor server listening on port $SERVER_PORT")
+            // Start worker coroutines (process requests from channel)
+            repeat(numWorkers) { workerId ->
+                serverScope?.launch {
+                    processRequests(workerId)
+                }
+            }
+
             true
 
         } catch (e: Exception) {
-            logger.error("❌ Failed to start global interceptor server", e)
             isRunning = false
+            serverScope?.cancel()
+            serverScope = null
+            requestChannel?.close()
+            requestChannel = null
             false
         }
     }
@@ -134,7 +156,6 @@ class GlobalOkHttpInterceptorServer {
     @Synchronized
     fun stopIfNoProjects() {
         if (registeredProjects.isEmpty() && isRunning) {
-            logger.info("🛑 No projects registered, stopping global server...")
             stop()
         }
     }
@@ -145,24 +166,31 @@ class GlobalOkHttpInterceptorServer {
     @Synchronized
     private fun stop() {
         if (!isRunning) {
-            logger.debug("Global server not running, nothing to stop")
             return
         }
 
-        logger.info("🛑 Stopping global interceptor server...")
         isRunning = false
 
         try {
+            // Cancel all coroutines gracefully
+            serverScope?.cancel()
+
+            // Close channel (will cause workers to exit)
+            requestChannel?.close()
+
+            // Close server socket (will cause acceptor to exit)
             serverSocket?.close()
-            serverThread?.interrupt()
-            serverThread?.join(2000)
+
+            // Wait a bit for graceful shutdown
+            runBlocking {
+                delay(1000)
+            }
         } catch (e: Exception) {
-            logger.error("Error stopping global server", e)
         }
 
+        serverScope = null
+        requestChannel = null
         serverSocket = null
-        serverThread = null
-        logger.info("✅ Global interceptor server stopped")
     }
 
     /**
@@ -178,11 +206,9 @@ class GlobalOkHttpInterceptorServer {
         val projectId = project.locationHash
         val projectName = project.name
 
-        logger.info("📝 Registering project: $projectName (ID: $projectId, Mode: $mode)")
 
         // Check if project already registered
         if (registeredProjects.containsKey(projectId)) {
-            logger.warn("⚠️ Project $projectName already registered, updating registration...")
             unregisterProject(project)
         }
 
@@ -200,19 +226,13 @@ class GlobalOkHttpInterceptorServer {
         // Mark as last active project
         lastActiveProjectId = projectId
 
-        logger.info("✅ Project registered: $projectName (Total active projects: ${registeredProjects.size})")
-        logger.info("   Mode: $mode")
-        logger.info("   Project ID: $projectId")
         if (packageNameFilter != null) {
-            logger.info("   Package filter: $packageNameFilter")
         } else {
-            logger.info("   Package filter: none (will receive all flows)")
         }
 
         // Ensure server is running
         if (!ensureStarted()) {
             registeredProjects.remove(projectId)
-            logger.error("❌ Failed to start global server, unregistering project")
             return false
         }
 
@@ -230,7 +250,6 @@ class GlobalOkHttpInterceptorServer {
         val registration = registeredProjects.remove(projectId)
 
         if (registration != null) {
-            logger.info("📝 Unregistered project: ${registration.projectName} (Remaining: ${registeredProjects.size})")
 
             // Notify listeners
             registrationListeners.forEach { it.onProjectUnregistered(projectId) }
@@ -238,7 +257,6 @@ class GlobalOkHttpInterceptorServer {
             // Stop server if no projects left
             stopIfNoProjects()
         } else {
-            logger.debug("Project not registered: ${project.name}")
         }
     }
 
@@ -252,9 +270,7 @@ class GlobalOkHttpInterceptorServer {
         if (registration != null) {
             val updated = registration.copy(mode = newMode)
             registeredProjects[projectId] = updated
-            logger.info("🔄 Updated project mode: ${project.name} -> $newMode")
         } else {
-            logger.warn("⚠️ Cannot update mode for unregistered project: ${project.name}")
         }
     }
 
@@ -269,12 +285,9 @@ class GlobalOkHttpInterceptorServer {
             val updated = registration.copy(packageNameFilter = packageNameFilter)
             registeredProjects[projectId] = updated
             if (packageNameFilter != null) {
-                logger.info("🔄 Updated package filter: ${project.name} -> $packageNameFilter")
             } else {
-                logger.info("🔄 Removed package filter: ${project.name} (will receive ALL flows)")
             }
         } else {
-            logger.warn("⚠️ Cannot update package filter for unregistered project: ${project.name}")
         }
     }
 
@@ -293,34 +306,50 @@ class GlobalOkHttpInterceptorServer {
     }
 
     /**
-     * Main server loop.
+     * Acceptor coroutine: accepts incoming connections and puts them in the channel.
+     * Runs on Dispatchers.IO (blocking I/O is OK here).
      */
-    private fun runServer() {
-        logger.info("🔄 Global server loop started")
+    private suspend fun runAcceptor() {
         try {
             while (isRunning) {
                 try {
-                    val clientSocket = serverSocket?.accept() ?: break
-                    logger.debug("📱 Client connected: ${clientSocket.inetAddress.hostAddress}")
+                    // Accept connection (blocking call, but we're on Dispatchers.IO)
+                    val clientSocket = withContext(Dispatchers.IO) {
+                        serverSocket?.accept()
+                    } ?: break
 
-                    // Handle each client in separate thread
-                    thread(isDaemon = true) {
-                        handleClient(clientSocket)
-                    }
+
+                    // Send socket to channel (suspends if channel is full = backpressure)
+                    requestChannel?.send(clientSocket)
+
                 } catch (e: SocketException) {
                     if (isRunning) {
-                        logger.error("Socket error", e)
                     }
                     // Socket closed, exit loop
                     break
                 } catch (e: Exception) {
                     if (isRunning) {
-                        logger.error("Error accepting client connection", e)
                     }
                 }
             }
         } finally {
-            logger.debug("Global server loop ended")
+        }
+    }
+
+    /**
+     * Worker coroutine: processes sockets from the channel.
+     * Each worker runs independently and can handle requests concurrently.
+     */
+    private suspend fun processRequests(workerId: Int) {
+        try {
+            // Keep consuming from channel until it's closed
+            for (clientSocket in requestChannel!!) {
+                try {
+                    handleClient(clientSocket)
+                } catch (e: Exception) {
+                }
+            }
+        } finally {
         }
     }
 
@@ -337,14 +366,12 @@ class GlobalOkHttpInterceptorServer {
                 val json = reader.readLine()
 
                 if (json == null) {
-                    logger.debug("Client disconnected without sending data")
                     return
                 }
 
                 // Handle PING
                 if (json == "PING") {
                     writer.println("PONG")
-                    logger.debug("📡 PING received, sent PONG")
                     return
                 }
 
@@ -352,24 +379,18 @@ class GlobalOkHttpInterceptorServer {
                 val flowData = try {
                     gson.fromJson(json, AndroidFlowData::class.java)
                 } catch (e: Exception) {
-                    logger.error("Failed to parse flow data", e)
                     writer.println(gson.toJson(ModifiedResponseData.original()))
                     return
                 }
 
-                logger.info("🔴 INTERCEPTED: ${flowData.request.method} ${flowData.request.url}")
-                logger.info("   📦 Package: ${flowData.packageName ?: "unknown"}")
-                logger.info("   🎯 Project hint: ${flowData.projectId ?: "none"}")
 
                 // Route flow to appropriate project(s)
                 val response = routeFlow(flowData)
 
                 val responseJson = gson.toJson(response)
                 writer.println(responseJson)
-                logger.debug("✅ Response sent back to app")
 
             } catch (e: Exception) {
-                logger.error("Error handling client", e)
             }
         }
     }
@@ -381,7 +402,6 @@ class GlobalOkHttpInterceptorServer {
     private fun routeFlow(flowData: AndroidFlowData): ModifiedResponseData {
         // If no projects registered, return original
         if (registeredProjects.isEmpty()) {
-            logger.warn("⚠️ No projects registered, flow will not be captured")
             return ModifiedResponseData.original()
         }
 
@@ -395,9 +415,6 @@ class GlobalOkHttpInterceptorServer {
 
             if (projectsWithFilters.isNotEmpty()) {
                 // Projects have filters, so flow MUST match one - DON'T fallback
-                logger.warn("⚠️ Flow from '${flowData.packageName}' doesn't match any project filter")
-                logger.warn("   Projects with filters: ${projectsWithFilters.map { "${it.projectName} (${it.packageNameFilter})" }}")
-                logger.warn("   Flow will NOT be captured (strict filtering)")
                 return ModifiedResponseData.original()
             }
 
@@ -406,15 +423,12 @@ class GlobalOkHttpInterceptorServer {
                 ?: registeredProjects.values.lastOrNull()
 
             if (fallbackProject != null) {
-                logger.info("⚠️ No filters configured, routing to LAST ACTIVE: ${fallbackProject.projectName}")
                 return fallbackProject.flowHandler.handleFlow(flowData)
             } else {
-                logger.warn("⚠️ No projects available, flow will not be captured")
                 return ModifiedResponseData.original()
             }
         }
 
-        logger.info("✅ Routing flow to project: ${targetProject.projectName}")
         return targetProject.flowHandler.handleFlow(flowData)
     }
 
@@ -426,7 +440,6 @@ class GlobalOkHttpInterceptorServer {
         if (flowData.projectId != null) {
             val project = registeredProjects[flowData.projectId]
             if (project != null) {
-                logger.info("🎯 Matched by project ID: ${project.projectName}")
                 return project
             }
         }
@@ -440,9 +453,7 @@ class GlobalOkHttpInterceptorServer {
 
             if (matchingProjects.isNotEmpty()) {
                 val target = matchingProjects.first()
-                logger.info("🎯 Matched by package filter: ${target.projectName} (filter: ${target.packageNameFilter})")
                 if (matchingProjects.size > 1) {
-                    logger.warn("⚠️ Multiple projects match package ${flowData.packageName}, using first")
                 }
                 return target
             }
@@ -452,11 +463,9 @@ class GlobalOkHttpInterceptorServer {
         if (registeredProjects.size == 1) {
             val project = registeredProjects.values.first()
             if (project.packageNameFilter == null) {
-                logger.info("🎯 Using sole registered project (no filter): ${project.projectName}")
                 return project
             } else {
                 // Project has filter but flow doesn't match - DON'T use it
-                logger.info("⚠️ Flow package '${flowData.packageName}' doesn't match project filter '${project.packageNameFilter}'")
                 return null
             }
         }
@@ -465,16 +474,12 @@ class GlobalOkHttpInterceptorServer {
         val catchAllProjects = registeredProjects.values.filter { it.packageNameFilter == null }
         if (catchAllProjects.isNotEmpty()) {
             val target = catchAllProjects.first()
-            logger.info("🎯 Using catch-all project (no filter): ${target.projectName}")
             if (catchAllProjects.size > 1) {
-                logger.warn("⚠️ Multiple catch-all projects, using first")
             }
             return target
         }
 
         // 5. No match found
-        logger.info("⚠️ Could not find matching project for package '${flowData.packageName}'")
-        logger.info("   Available projects with filters: ${registeredProjects.values.map { "${it.projectName} (${it.packageNameFilter ?: "no filter"})" }}")
         return null
     }
 }

@@ -8,7 +8,6 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.MockkCollection
 import com.sergiy.dev.mockkhttp.store.MockkRulesStore
 import java.awt.BorderLayout
@@ -31,7 +30,6 @@ import javax.swing.tree.TreePath
  */
 class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
     private val mockkRulesStore = MockkRulesStore.getInstance(project)
 
     private val treeModel: DefaultTreeModel
@@ -45,7 +43,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     init {
-        logger.info("Initializing Mockk Rules Panel (Tree View)...")
 
         // Create tree model
         rootNode = DefaultMutableTreeNode("Collections")
@@ -149,7 +146,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         add(toolbar, BorderLayout.NORTH)
         add(JBScrollPane(tree), BorderLayout.CENTER)
 
-        logger.info("✅ Mockk Rules Panel initialized (Tree View)")
     }
 
     /**
@@ -369,7 +365,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         // For now, package name is empty - will be set when adding rules from specific app
         mockkRulesStore.addCollection(name, "", description)
-        logger.info("Created new collection: $name")
     }
 
     private fun createNewMock() {
@@ -390,7 +385,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         val dialog = CreateMockDialog(project, targetCollectionId = targetCollectionId)
         if (dialog.showAndGet()) {
-            logger.info("New mock rule created")
         }
     }
 
@@ -444,13 +438,11 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
         }
 
-        logger.info("Updated collection: $newName")
     }
 
     private fun editRule(rule: MockkRulesStore.MockkRule) {
         val dialog = CreateMockDialog(project, existingRule = rule)
         if (dialog.showAndGet()) {
-            logger.info("Mock rule edited: ${rule.name}")
 
             // Get the updated rule from store
             val updatedRule = mockkRulesStore.getAllRules().find { it.id == rule.id }
@@ -460,7 +452,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                 // Check for conflicts after editing
                 val conflicts = findConflictingRules(updatedRule)
                 if (conflicts.isNotEmpty()) {
-                    logger.info("🔄 Disabling ${conflicts.size} conflicting rule(s) after editing '${updatedRule.name}'")
                     for (conflictingRule in conflicts) {
                         mockkRulesStore.setRuleEnabled(conflictingRule, false)
                         updateRuleNodeInTree(conflictingRule.id)
@@ -552,7 +543,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (selectedIndex >= 0) {
             val targetCollection = collections[selectedIndex]
             mockkRulesStore.duplicateRule(nodeData.rule, targetCollection.id)
-            logger.info("Duplicated rule to collection: ${targetCollection.name}")
         }
     }
 
@@ -595,7 +585,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                     updateRuleNodeInTree(rule.id)
                 }
             }
-            logger.info("✅ Enabled collection '${collection.name}' and all its rules")
         } else {
             // Disabling collection: disable all its rules
             for (rule in rules) {
@@ -604,7 +593,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                     updateRuleNodeInTree(rule.id)
                 }
             }
-            logger.info("⚠️ Disabled collection '${collection.name}' and all its rules")
         }
 
         // Track this collection
@@ -624,7 +612,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (newEnabledState) {
             val conflicts = findConflictingRules(rule)
             if (conflicts.isNotEmpty()) {
-                logger.info("🔄 Disabling ${conflicts.size} conflicting rule(s) when enabling '${rule.name}'")
                 for (conflictingRule in conflicts) {
                     mockkRulesStore.setRuleEnabled(conflictingRule, false)
                     // Update the conflicting rule's node
@@ -664,11 +651,9 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (hasEnabledRules && !collection.enabled) {
             // At least one rule enabled → enable collection
             mockkRulesStore.updateCollection(collectionId, enabled = true)
-            logger.debug("Auto-enabled collection '${collection.name}' (has active rules)")
         } else if (!hasEnabledRules && collection.enabled) {
             // All rules disabled → disable collection
             mockkRulesStore.updateCollection(collectionId, enabled = false)
-            logger.debug("Auto-disabled collection '${collection.name}' (no active rules)")
         }
 
         // Update collection node in tree
@@ -710,7 +695,6 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
 
         if (conflictsResolved > 0) {
-            logger.info("🔄 Resolved $conflictsResolved conflicting rule(s) on load")
 
             // Refresh all nodes with FRESH data from store
             val allRulesMap = mockkRulesStore.getAllRules().associateBy { it.id }
@@ -927,14 +911,12 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                 val json = mockkRulesStore.exportCollections(collectionsToExport)
                 file.writeText(json)
 
-                logger.info("✅ Exported ${collectionsToExport.size} collection(s) to ${file.absolutePath}")
                 Messages.showInfoMessage(
                     this,
                     "Successfully exported ${collectionsToExport.size} collection(s)",
                     "Export Successful"
                 )
             } catch (e: Exception) {
-                logger.error("Failed to export collections", e)
                 Messages.showErrorDialog(this, "Failed to export: ${e.message}", "Export Failed")
             }
         }
@@ -957,14 +939,12 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                 val imported = mockkRulesStore.importCollections(json, renameOnConflict = true)
 
-                logger.info("✅ Imported ${imported.size} collection(s)")
                 Messages.showInfoMessage(
                     this,
                     "Successfully imported ${imported.size} collection(s)",
                     "Import Successful"
                 )
             } catch (e: Exception) {
-                logger.error("Failed to import collections", e)
                 Messages.showErrorDialog(this, "Failed to import: ${e.message}", "Import Failed")
             }
         }

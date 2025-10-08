@@ -15,7 +15,6 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
-import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.MatchType
 import com.sergiy.dev.mockkhttp.model.ModifiedResponseData
 import com.sergiy.dev.mockkhttp.model.QueryParam
@@ -43,7 +42,6 @@ class CreateMockDialog(
     private val targetCollectionId: String? = null     // Pre-select collection
 ) : DialogWrapper(project) {
 
-    private val logger = MockkHttpLogger.getInstance(project)
     private val mockkRulesStore = MockkRulesStore.getInstance(project)
 
     // Collection selector
@@ -321,7 +319,6 @@ class CreateMockDialog(
         val packageName = targetPackageName ?: ""
 
         val newCollection = mockkRulesStore.addCollection(name, packageName, description)
-        logger.info("Created new collection inline: $name")
 
         // Add to combo box and select it
         collectionComboBox.addItem(newCollection)
@@ -735,7 +732,6 @@ class CreateMockDialog(
             collectionId = collectionId
         )
 
-        logger.info("Mock rule ${if (existingRule != null) "updated" else "created"}: ${nameField.text} in collection: $collectionId")
         super.doOKAction()
     }
 
