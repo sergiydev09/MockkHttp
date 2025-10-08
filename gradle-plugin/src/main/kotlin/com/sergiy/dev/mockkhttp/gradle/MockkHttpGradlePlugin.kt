@@ -26,6 +26,12 @@ class MockkHttpGradlePlugin : Plugin<Project> {
                         "Apply 'com.android.application' or 'com.android.library' first."
             )
 
+        // Add JitPack repository for android-library dependency
+        project.repositories.maven {
+            name = "JitPack"
+            url = project.uri("https://jitpack.io")
+        }
+
         // Add android-library dependency automatically (debug builds only)
         project.afterEvaluate {
             // Check if user accidentally used 'implementation' instead of 'debugImplementation'
@@ -78,7 +84,7 @@ class MockkHttpGradlePlugin : Plugin<Project> {
             }
 
             // Automatically add android-library dependency for debug builds
-            val pluginVersion = "1.4.8" // Must match gradle-plugin version
+            val pluginVersion = "1.4.9" // Must match gradle-plugin version
             project.dependencies.add(
                 "debugImplementation",
                 "com.github.sergiydev09.MockkHttp:mockk-http-interceptor:$pluginVersion"
