@@ -108,9 +108,9 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                 <h1>🚀 MockkHttp Setup Guide</h1>
 
                 <div class="note">
-                    <strong>⚠️ IMPORTANT - Version 1.4.2 Update Required</strong>
+                    <strong>⚠️ IMPORTANT - Version 1.4.8 Stable Release</strong>
                     <p>
-                        This version (1.4.2) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
+                        This version (1.4.8) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
                         Just apply the Gradle plugin and it handles everything.
                     </p>
                     <p>
@@ -130,7 +130,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     <pre>plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.4.2"
+    id("io.github.sergiydev09.mockkhttp") version "1.4.8"
 }
 
 // That's it! No dependencies needed.
@@ -219,7 +219,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
                 <br/><br/>
                 <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.4.1 | Fully Automatic Setup | Built for Android Development
+                    MockkHttp v1.4.8 | Fully Automatic Setup | Built for Android Development
                 </p>
             </body>
             </html>
