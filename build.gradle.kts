@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.4.2"
+version = "1.4.3"
 
 repositories {
     mavenCentral()
@@ -40,24 +40,35 @@ dependencies {
 }
 
 intellijPlatform {
+    publishing {
+        token.set(providers.gradleProperty("token"))
+    }
+
     pluginConfiguration {
         ideaVersion {
             sinceBuild = "241"
         }
 
         changeNotes = """
-            <h3>Version 1.4.2 - Koin/Dagger DI Support Fix</h3>
+            <h3>Version 1.4.3 - Deprecated API Cleanup</h3>
             <ul>
-                <li><strong>🔧 Fix:</strong> Interceptor now works with Dependency Injection frameworks (Koin, Dagger, Hilt)</li>
-                <li><strong>✅ Improved Detection:</strong> More robust bytecode transformation that works regardless of where OkHttpClient.Builder is created</li>
-                <li><strong>📦 DI Patterns:</strong> Now supports DI module patterns, helper functions, and shared builders</li>
+                <li><strong>🔧 Fix:</strong> Replaced deprecated URL(String) constructor with URI.create().toURL()</li>
+                <li><strong>🔧 Fix:</strong> Replaced deprecated Messages.showChooseDialog with Messages.showDialog</li>
+                <li><strong>✅ Compatibility:</strong> Updated to use modern IntelliJ Platform APIs for better future compatibility</li>
+                <li><strong>📦 No Breaking Changes:</strong> Fully compatible with existing setups</li>
             </ul>
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.2"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.3"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! The plugin automatically adds the dependency and injects the interceptor</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
+            </ul>
+
+            <h3>Previous Version 1.4.2 - DI Support</h3>
+            <ul>
+                <li><strong>🔧 Fix:</strong> Interceptor now works with Dependency Injection frameworks (Koin, Dagger, Hilt)</li>
+                <li><strong>✅ Improved Detection:</strong> More robust bytecode transformation</li>
             </ul>
 
             <h3>Version 1.4.0-1.4.1 Features (Previous)</h3>

@@ -242,7 +242,7 @@ class BatchCreateMockDialog(
                 // Generate a unique name for the mock rule
                 val url = flow.request.url
                 val pathSegment = try {
-                    java.net.URL(url).path.split("/").lastOrNull { it.isNotEmpty() } ?: "endpoint"
+                    java.net.URI.create(url).toURL().path.split("/").lastOrNull { it.isNotEmpty() } ?: "endpoint"
                 } catch (e: Exception) {
                     "endpoint"
                 }

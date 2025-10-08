@@ -409,7 +409,7 @@ class OkHttpInterceptorServer(private val project: Project) {
      */
     private fun matchesUrlPattern(url: String, rule: com.sergiy.dev.mockkhttp.store.MockkRulesStore.MockkRule): Boolean {
         try {
-            val parsedUrl = java.net.URL(url)
+            val parsedUrl = java.net.URI.create(url).toURL()
 
             // Match scheme
             if (rule.scheme.isNotEmpty() && parsedUrl.protocol != rule.scheme) {
@@ -450,7 +450,7 @@ class OkHttpInterceptorServer(private val project: Project) {
     private fun convertToHttpFlowData(androidFlow: AndroidFlowData): HttpFlowData {
         val url = androidFlow.request.url
         val parsedUrl = try {
-            java.net.URL(url)
+            java.net.URI.create(url).toURL()
         } catch (e: Exception) {
             null
         }

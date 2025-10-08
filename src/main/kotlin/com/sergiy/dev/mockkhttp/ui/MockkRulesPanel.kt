@@ -540,13 +540,13 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
 
         val collectionNames = collections.map { it.name }.toTypedArray()
-        val selectedIndex = Messages.showChooseDialog(
+        val selectedIndex = Messages.showDialog(
             project,
             "Select target collection:",
             "Duplicate Rule",
-            Messages.getQuestionIcon(),
             collectionNames,
-            collectionNames[0]
+            0,  // Default selection index
+            Messages.getQuestionIcon()
         )
 
         if (selectedIndex >= 0) {
