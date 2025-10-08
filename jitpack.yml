@@ -1,7 +1,6 @@
 install:
-  - ./gradlew :gradle-plugin:publishToMavenLocal -x test --no-configuration-cache
-  - ./gradlew :android-library:publishToMavenLocal -x test --no-configuration-cache
+  - ./gradlew :android-library:publishToMavenLocal -x test
 before_install:
-  - sdk install java 17.0.16-tem || true
-  - sdk use java 17.0.16-tem
+  - sdk install java 21.0.1-tem || true
+  - sdk use java 21.0.1-tem
   - export ANDROID_HOME=/opt/android-sdk-linux
