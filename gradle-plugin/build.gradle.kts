@@ -43,3 +43,21 @@ java {
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     kotlinOptions.jvmTarget = "17"
 }
+
+// Copy android-library AAR into plugin resources
+val copyAar by tasks.registering(Copy::class) {
+    dependsOn(":android-library:assembleRelease")
+    from("${project.rootDir}/android-library/build/outputs/aar/android-library-release.aar")
+    into("${layout.buildDirectory.get()}/resources/main/aar")
+    rename { "mockk-http-interceptor.aar" }
+}
+
+tasks.named("processResources") {
+    dependsOn(copyAar)
+}
+
+tasks.whenTaskAdded {
+    if (name == "sourcesJar") {
+        dependsOn(copyAar)
+    }
+}
