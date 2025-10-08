@@ -78,7 +78,6 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                 val method = activityThreadClass.getMethod("currentApplication")
                 method.invoke(null) as? Context
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to get Application context via reflection", e)
                 null
             }
         }
@@ -93,34 +92,26 @@ class MockkHttpInterceptor @JvmOverloads constructor(
             val isDebugBuild = debugField.getBoolean(null)
 
             if (!isDebugBuild) {
-                Log.e(TAG, "❌ SECURITY: MockkHttpInterceptor detected in RELEASE build! This should never happen.")
-                Log.e(TAG, "❌ The interceptor will be disabled to prevent security issues.")
                 // Pass through without intercepting
                 return chain.proceed(chain.request())
             }
         } catch (e: Exception) {
             // If we can't determine build type, assume it's safe (debug)
-            Log.w(TAG, "Could not determine build type, assuming debug: ${e.message}")
         }
 
         if (!isEnabled) {
-            Log.v(TAG, "Interceptor disabled, passing through")
             return chain.proceed(chain.request())
         }
 
         val request = chain.request()
         val startTime = System.currentTimeMillis()
 
-        Log.d(TAG, "🔵 Intercepting: ${request.method} ${request.url}")
-
         // Proceed with request to get response
         val response: Response
         try {
             response = chain.proceed(request)
-            Log.d(TAG, "✅ Got response: ${response.code} for ${request.url}")
         } catch (e: IOException) {
             // Network error, can't intercept
-            Log.e(TAG, "❌ Network error for ${request.url}", e)
             throw e
         }
 
@@ -128,25 +119,20 @@ class MockkHttpInterceptor @JvmOverloads constructor(
 
         // Check if plugin is connected
         if (!isPluginConnected()) {
-            Log.d(TAG, "⚠️ Plugin not connected, skipping interception for ${request.url}")
             return response
         }
 
         return try {
             if (debugMode) {
                 // Debug mode: pause and wait for modification
-                Log.d(TAG, "⏸️ DEBUG MODE: Waiting for user input for ${request.url}")
                 val result = sendToPluginAndWait(request, response, duration) ?: response
-                Log.d(TAG, "▶️ Continuing with response for ${request.url}")
                 result
             } else {
                 // Recording mode: just send async without waiting
-                Log.d(TAG, "📝 RECORDING MODE: Sending async for ${request.url}")
                 sendToPluginAsync(request, response, duration)
                 response
             }
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error intercepting request for ${request.url}", e)
             response
         }
     }
@@ -159,16 +145,12 @@ class MockkHttpInterceptor @JvmOverloads constructor(
     private fun isPluginConnected(): Boolean {
         // If we've failed too many times, stop trying (failsafe mode)
         if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
-            Log.d(TAG, "⚠️ Plugin connection disabled after $failedAttempts failed attempts (failsafe mode)")
             return false
         }
 
         // Use cached result if still valid (within PING_CACHE_DURATION_MS)
         val now = System.currentTimeMillis()
-        if (now - lastPingTime < PING_CACHE_DURATION_MS) {
-            Log.v(TAG, "Using cached ping result: $lastPingResult")
-            return lastPingResult
-        }
+        if (now - lastPingTime < PING_CACHE_DURATION_MS) return lastPingResult
 
         // Perform actual ping with fast timeout
         val connected = try {
@@ -182,18 +164,13 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                 val success = read > 0 && String(response, 0, read).startsWith("PONG")
 
                 if (success) {
-                    Log.d(TAG, "✅ Plugin connected (ping successful)")
                     failedAttempts = 0  // Reset failure counter on success
-                } else {
-                    Log.d(TAG, "⚠️ Plugin ping failed (invalid response)")
                 }
 
                 success
             }
         } catch (e: Exception) {
-            Log.d(TAG, "⚠️ Plugin not reachable: ${e.message}")
             failedAttempts++
-            Log.d(TAG, "Failed attempts: $failedAttempts / $MAX_FAILED_ATTEMPTS")
             false
         }
 
@@ -225,7 +202,6 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                 it.getOutputStream().write(json.toByteArray())
                 it.getOutputStream().flush()
 
-                Log.d(TAG, "Sent flow to plugin: ${request.method} ${request.url}")
 
                 // WAIT for modified response (blocks thread)
                 val reader = it.getInputStream().bufferedReader()
@@ -233,23 +209,17 @@ class MockkHttpInterceptor @JvmOverloads constructor(
 
                 if (modifiedJson == null || modifiedJson == "PONG") {
                     // Plugin sent PONG (ping response) or nothing, use original
-                    Log.d(TAG, "📡 Received PONG or null, using original response")
                     return originalResponse
                 }
 
-                Log.d(TAG, "📥 Received from plugin: $modifiedJson")
                 val modifiedData = gson.fromJson(modifiedJson, ModifiedResponseData::class.java)
-
-                Log.d(TAG, "✅ Parsed modified response from plugin")
 
                 // Build modified response
                 buildModifiedResponse(originalResponse, modifiedData)
             }
         } catch (e: SocketTimeoutException) {
-            Log.w(TAG, "Timeout waiting for plugin response, using original")
             null
         } catch (e: IOException) {
-            Log.e(TAG, "IO error communicating with plugin", e)
             null
         }
     }
@@ -274,10 +244,8 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                     it.getOutputStream().write(json.toByteArray())
                     it.getOutputStream().flush()
 
-                    Log.d(TAG, "Sent flow to plugin (async): ${request.method} ${request.url}")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error sending flow async", e)
             }
         }.start()
     }
@@ -297,7 +265,6 @@ class MockkHttpInterceptor @JvmOverloads constructor(
             // For now, we'll just capture headers and URL
             ""
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to read request body", e)
             ""
         }
 
@@ -312,12 +279,9 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                 5 * 1024 * 1024 // Default 5MB
             }
 
-            Log.d(TAG, "📖 Reading response body: contentLength=$contentLength, maxSize=$maxSize")
             val body = response.peekBody(maxSize).string()
-            Log.d(TAG, "✅ Read ${body.length} chars from response body")
             body
         } catch (e: Exception) {
-            Log.w(TAG, "⚠️ Failed to read response body", e)
             ""
         }
 
@@ -348,28 +312,23 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         original: Response,
         modified: ModifiedResponseData
     ): Response {
-        Log.d(TAG, "🔧 Building response - Modified: statusCode=${modified.statusCode}, hasHeaders=${modified.headers != null}, hasBody=${modified.body != null}")
 
         // If nothing was modified, return original as-is
         if (modified.statusCode == null && modified.headers == null && modified.body == null) {
-            Log.d(TAG, "✅ Nothing modified, returning original response")
             return original
         }
 
         val statusCode = modified.statusCode ?: original.code
         val originalBodySize = original.body?.contentLength() ?: 0
 
-        Log.d(TAG, "📊 Original: statusCode=${original.code}, bodySize=${originalBodySize}")
 
         // If body was modified, use it. Otherwise, keep original body.
         val responseBody = if (modified.body != null) {
             val contentType = original.body?.contentType() ?: "application/json".toMediaType()
             val newBody = modified.body.toResponseBody(contentType)
-            Log.d(TAG, "🔄 Using MODIFIED body (${modified.body.length} chars)")
             newBody
         } else {
             // Keep original body
-            Log.d(TAG, "♻️ Keeping ORIGINAL body (${originalBodySize} bytes)")
             original.body
         }
 
@@ -379,14 +338,11 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         // Only set body if we have one
         if (responseBody != null) {
             builder = builder.body(responseBody)
-            Log.d(TAG, "✅ Body set successfully")
         } else {
-            Log.w(TAG, "⚠️ No body to set!")
         }
 
         // Apply modified headers (compatible with API 21+)
         modified.headers?.let { headers ->
-            Log.d(TAG, "📝 Applying ${headers.size} modified headers")
             for ((key, value) in headers) {
                 builder = builder.header(key, value)
             }
@@ -394,7 +350,6 @@ class MockkHttpInterceptor @JvmOverloads constructor(
 
         val result = builder.build()
         val resultBodySize = result.body?.contentLength() ?: 0
-        Log.d(TAG, "✅ Final response: statusCode=${result.code}, bodySize=${resultBodySize}")
 
         return result
     }

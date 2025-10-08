@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     `kotlin-dsl`
     `maven-publish`
@@ -5,7 +7,7 @@ plugins {
 }
 
 group = "io.github.sergiydev09.mockkhttp"
-version = "1.4.12"
+version = "1.4.13"
 
 repositories {
     google()
@@ -41,7 +43,7 @@ java {
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    kotlinOptions.jvmTarget = "17"
+    compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
 }
 
 // Copy android-library AAR into plugin resources

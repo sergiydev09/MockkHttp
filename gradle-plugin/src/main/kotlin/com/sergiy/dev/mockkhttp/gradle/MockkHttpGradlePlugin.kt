@@ -119,7 +119,7 @@ class MockkHttpGradlePlugin : Plugin<Project> {
         val aarInputStream = javaClass.getResourceAsStream(aarResourcePath)
             ?: throw IllegalStateException("Bundled AAR not found in plugin resources: $aarResourcePath")
 
-        val cacheDir = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http/1.4.12")
+        val cacheDir = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http/1.4.13")
         cacheDir.mkdirs()
 
         val aarFile = java.io.File(cacheDir, "mockk-http-interceptor.aar")
