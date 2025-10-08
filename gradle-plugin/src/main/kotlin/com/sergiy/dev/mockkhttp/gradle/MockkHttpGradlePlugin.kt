@@ -82,7 +82,7 @@ class MockkHttpGradlePlugin : Plugin<Project> {
             }
 
             // Automatically add android-library dependency for debug builds
-            val pluginVersion = "1.4.10" // Must match gradle-plugin version
+            val pluginVersion = "1.4.11" // Must match gradle-plugin version
             project.dependencies.add(
                 "debugImplementation",
                 "com.sergiy.dev.mockkhttp:mockk-http-interceptor:$pluginVersion"
@@ -119,7 +119,7 @@ class MockkHttpGradlePlugin : Plugin<Project> {
         val aarInputStream = javaClass.getResourceAsStream(aarResourcePath)
             ?: throw IllegalStateException("Bundled AAR not found in plugin resources: $aarResourcePath")
 
-        val cacheDir = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http/1.4.10")
+        val cacheDir = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http/1.4.11")
         cacheDir.mkdirs()
 
         val aarFile = java.io.File(cacheDir, "mockk-http-interceptor.aar")
@@ -139,15 +139,11 @@ class MockkHttpGradlePlugin : Plugin<Project> {
     private fun publishAarToLocalMaven(project: Project, aarFile: java.io.File) {
         val groupId = "com.sergiy.dev.mockkhttp"
         val artifactId = "mockk-http-interceptor"
-        val version = "1.4.10"
+        val version = "1.4.11"
 
-        val localRepo = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http-maven")
-
-        // Add local repository
-        project.repositories.maven {
-            name = "MockkHttpLocal"
-            url = project.uri(localRepo)
-        }
+        // Use standard Maven Local repository (~/.m2/repository)
+        val userHome = System.getProperty("user.home")
+        val localRepo = java.io.File(userHome, ".m2/repository")
 
         // Create POM file
         val groupPath = groupId.replace('.', '/')
@@ -193,5 +189,9 @@ class MockkHttpGradlePlugin : Plugin<Project> {
         if (!targetAar.exists()) {
             aarFile.copyTo(targetAar, overwrite = true)
         }
+
+        // Ensure mavenLocal() is available - user must add it to settings.gradle.kts if using PREFER_SETTINGS
+        project.logger.info("MockkHttp: AAR published to Maven Local (~/.m2/repository)")
+        project.logger.info("MockkHttp: If using repositoriesMode = PREFER_SETTINGS, add mavenLocal() to settings.gradle.kts")
     }
 }
