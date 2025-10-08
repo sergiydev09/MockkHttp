@@ -82,7 +82,7 @@ class MockkHttpGradlePlugin : Plugin<Project> {
             }
 
             // Automatically add android-library dependency for debug builds
-            val pluginVersion = "1.4.9" // Must match gradle-plugin version
+            val pluginVersion = "1.4.10" // Must match gradle-plugin version
             project.dependencies.add(
                 "debugImplementation",
                 "com.sergiy.dev.mockkhttp:mockk-http-interceptor:$pluginVersion"
@@ -119,7 +119,7 @@ class MockkHttpGradlePlugin : Plugin<Project> {
         val aarInputStream = javaClass.getResourceAsStream(aarResourcePath)
             ?: throw IllegalStateException("Bundled AAR not found in plugin resources: $aarResourcePath")
 
-        val cacheDir = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http/1.4.9")
+        val cacheDir = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http/1.4.10")
         cacheDir.mkdirs()
 
         val aarFile = java.io.File(cacheDir, "mockk-http-interceptor.aar")
@@ -139,7 +139,7 @@ class MockkHttpGradlePlugin : Plugin<Project> {
     private fun publishAarToLocalMaven(project: Project, aarFile: java.io.File) {
         val groupId = "com.sergiy.dev.mockkhttp"
         val artifactId = "mockk-http-interceptor"
-        val version = "1.4.9"
+        val version = "1.4.10"
 
         val localRepo = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http-maven")
 

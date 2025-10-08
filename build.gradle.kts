@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.4.9"
+version = "1.4.10"
 
 repositories {
     mavenCentral()
@@ -50,24 +50,19 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.4.9 - Publishing Fix</h3>
+            <h3>Version 1.4.10 - Self-Contained Distribution</h3>
             <ul>
-                <li><strong>🔧 Fix:</strong> Synchronized android-library version to ensure proper JitPack publishing</li>
-                <li><strong>✅ Interceptor:</strong> mockk-http-interceptor artifact now correctly published</li>
-                <li><strong>📦 Multi-module:</strong> All modules (plugin, library, IDE plugin) now version-synchronized</li>
+                <li><strong>🎯 Breaking Change:</strong> No longer requires JitPack - fully self-contained</li>
+                <li><strong>📦 Bundled AAR:</strong> mockk-http-interceptor AAR now bundled inside plugin</li>
+                <li><strong>🚀 Simplified:</strong> Plugin extracts and manages AAR automatically</li>
+                <li><strong>✅ Distribution:</strong> Everything via Gradle Plugin Portal only</li>
             </ul>
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.9"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.10"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! The plugin automatically adds the dependency and injects the interceptor</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
-            </ul>
-
-            <h3>Previous Version 1.4.8 - Stable Release</h3>
-            <ul>
-                <li><strong>✅ Stability:</strong> Reverted to stable 1.4.3 base with proven reliability</li>
-                <li><strong>🔧 API Updates:</strong> Modern IntelliJ Platform APIs (non-deprecated)</li>
             </ul>
 
             <h3>Previous Version 1.4.3 - API Cleanup</h3>
