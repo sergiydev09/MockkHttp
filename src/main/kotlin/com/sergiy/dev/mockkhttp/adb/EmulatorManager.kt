@@ -49,17 +49,27 @@ class EmulatorManager(project: Project) {
                 logger.error("ADB executable not found. Please install Android SDK Platform Tools.")
                 return false
             }
-            
+
             logger.debug("ADB found at: $adbPath")
 
-            // Initialize ADB with modern AdbInitOptions
-            val adbInitOptions = AdbInitOptions.builder()
-                .setClientSupportEnabled(false)
-                .useJdwpProxyService(false)
-                .build()
+            // Initialize ADB with modern AdbInitOptions (only if not already initialized)
+            // AndroidDebugBridge.init() can only be called ONCE per JVM process
+            // When multiple projects are open, only the first one should call init()
+            try {
+                val adbInitOptions = AdbInitOptions.builder()
+                    .setClientSupportEnabled(false)
+                    .useJdwpProxyService(false)
+                    .build()
 
-            AndroidDebugBridge.init(adbInitOptions)
-            logger.debug("ADB initialized successfully with AdbInitOptions")
+                AndroidDebugBridge.init(adbInitOptions)
+                logger.debug("ADB initialized successfully with AdbInitOptions")
+            } catch (e: IllegalStateException) {
+                if (e.message?.contains("already been called") == true) {
+                    logger.debug("ADB already initialized by another project (multi-project mode)")
+                } else {
+                    throw e
+                }
+            }
 
             // Create bridge with timeout to prevent hanging
             adbBridge = AndroidDebugBridge.createBridge(
@@ -249,68 +259,6 @@ class EmulatorManager(project: Project) {
         }
 
         return adbBridge?.devices?.find { it.serialNumber == serialNumber }
-    }
-
-    /**
-     * Check if emulator has root access.
-     */
-    fun hasRootAccess(serialNumber: String): Boolean {
-        return getRootType(serialNumber) != RootType.NONE
-    }
-
-    /**
-     * Root access type for an emulator.
-     */
-    enum class RootType {
-        NONE,           // No root access
-        DIRECT_SHELL,   // ADB shell is already root (no su needed)
-        VIA_SU          // Root via su command
-    }
-
-    /**
-     * Detect the type of root access available.
-     */
-    fun getRootType(serialNumber: String): RootType {
-        logger.debug("Checking root access for: $serialNumber")
-
-        try {
-            val device = getDevice(serialNumber)
-
-            if (device == null) {
-                logger.warn("Device not found: $serialNumber")
-                return RootType.NONE
-            }
-
-            // First check if ADB shell is already running as root (common in emulators)
-            val whoamiReceiver = CollectingOutputReceiver()
-            device.executeShellCommand("whoami", whoamiReceiver, 5, TimeUnit.SECONDS)
-            val whoamiOutput = whoamiReceiver.output.trim()
-
-            if (whoamiOutput == "root") {
-                logger.info("✅ Root access confirmed for $serialNumber (ADB shell is root)")
-                return RootType.DIRECT_SHELL
-            }
-
-            // If not, try su command
-            val receiver = CollectingOutputReceiver()
-            device.executeShellCommand("su -c id", receiver, 5, TimeUnit.SECONDS)
-            val output = receiver.output
-
-            val hasRoot = output.contains("uid=0(root)")
-
-            if (hasRoot) {
-                logger.info("✅ Root access confirmed for $serialNumber (via su)")
-                return RootType.VIA_SU
-            } else {
-                logger.warn("❌ No root access for $serialNumber")
-                logger.debug("Root check output: $output")
-                return RootType.NONE
-            }
-
-        } catch (e: Exception) {
-            logger.error("Failed to check root access for $serialNumber", e)
-            return RootType.NONE
-        }
     }
     
     /**

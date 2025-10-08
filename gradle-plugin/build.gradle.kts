@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.github.sergiydev09.mockkhttp"
-version = "1.2.0"
+version = "1.4.12"
 
 repositories {
     google()
@@ -14,7 +14,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.android.tools.build:gradle:8.2.0")
+    implementation("com.android.tools.build:gradle:8.7.3")
     implementation("org.ow2.asm:asm:9.6")
     implementation("org.ow2.asm:asm-commons:9.6")
     implementation("org.ow2.asm:asm-tree:9.6")
@@ -40,6 +40,24 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
-kotlin {
-    jvmToolchain(17)
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+    kotlinOptions.jvmTarget = "17"
+}
+
+// Copy android-library AAR into plugin resources
+val copyAar by tasks.registering(Copy::class) {
+    dependsOn(":android-library:assembleRelease")
+    from("${project.rootDir}/android-library/build/outputs/aar/android-library-release.aar")
+    into("${layout.buildDirectory.get()}/resources/main/aar")
+    rename { "mockk-http-interceptor.aar" }
+}
+
+tasks.named("processResources") {
+    dependsOn(copyAar)
+}
+
+tasks.whenTaskAdded {
+    if (name == "sourcesJar") {
+        dependsOn(copyAar)
+    }
 }

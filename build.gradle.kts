@@ -1,11 +1,13 @@
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "2.1.0"
+    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+    id("com.android.library") version "8.7.3" apply false
     id("org.jetbrains.intellij.platform") version "2.5.0"
 }
 
 group = "com.sergiy.dev"
-version = "1.2.0"
+version = "1.4.12"
 
 repositories {
     mavenCentral()
@@ -38,47 +40,48 @@ dependencies {
 }
 
 intellijPlatform {
+    publishing {
+        token.set(providers.gradleProperty("intellijPublishToken"))
+    }
+
     pluginConfiguration {
         ideaVersion {
             sinceBuild = "241"
         }
 
         changeNotes = """
-            <h3>Version 1.2.0 - Interceptor Architecture & Security Hardening</h3>
+            <h3>Version 1.4.12 - True Zero-Config</h3>
             <ul>
-                <li><strong>🚀 New Architecture:</strong> Switched from mitmproxy to OkHttp Interceptor for simpler, more reliable operation</li>
-                <li><strong>⚡ Zero Configuration:</strong> No proxy setup, no certificates, no iptables - just add Gradle plugin and go!</li>
-                <li><strong>🔒 Production Safety:</strong> 4-layer security system prevents accidental inclusion in release builds</li>
-                <li><strong>💉 Automatic Injection:</strong> Gradle plugin automatically injects interceptor via bytecode transformation</li>
-                <li><strong>🐛 Debug Mode Enhanced:</strong> Visual indicator for modified responses with [DEBUG: Modified] tag in cyan</li>
-                <li><strong>🍎 Cross-Platform:</strong> Works on macOS, Windows, and Linux (no longer Mac-only)</li>
-                <li><strong>📱 API 21+ Support:</strong> Compatible with Android 5.0+ emulators</li>
-                <li><strong>🎨 Theme Support:</strong> Help panel now adapts to IDE light/dark themes</li>
+                <li><strong>🎯 No Repository Needed:</strong> Uses files() dependency - works everywhere</li>
+                <li><strong>✅ PREFER_SETTINGS Compatible:</strong> No repository configuration required</li>
+                <li><strong>🚀 Zero Setup:</strong> Just apply the plugin and it works</li>
             </ul>
 
-            <h3>Breaking Changes:</h3>
+            <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li>Removed mitmproxy dependency - no longer required!</li>
-                <li>Removed certificate installation step - no longer needed!</li>
-                <li>New Gradle plugin ID: <code>io.github.sergiydev09.mockkhttp</code></li>
-                <li>Setup now requires adding Gradle plugin to your app</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.12"</code> to plugins block</li>
+                <li><strong>Step 2:</strong> That's it! No repository configuration needed</li>
+                <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
 
-            <h3>Version 1.0.3 - Initial Release (Proxy Architecture)</h3>
+            <h3>Previous Version 1.4.3 - API Cleanup</h3>
             <ul>
-                <li><strong>Three Operation Modes:</strong> Recording, Debug, and Mockk modes</li>
-                <li><strong>mitmproxy Integration:</strong> Python addon for traffic interception</li>
-                <li><strong>Certificate Management:</strong> Automatic mitmproxy CA certificate installation</li>
-                <li><strong>App-Level Filtering:</strong> iptables-based traffic filtering</li>
-                <li><strong>Mock Rule Management:</strong> Create and apply mock responses</li>
+                <li><strong>🔧 Fix:</strong> Replaced deprecated URL(String) constructor with URI.create().toURL()</li>
+                <li><strong>🔧 Fix:</strong> Replaced deprecated Messages.showChooseDialog with Messages.showDialog</li>
             </ul>
 
-            <h4>Requirements:</h4>
+            <h3>Version 1.4.2 - DI Support</h3>
+            <ul>
+                <li><strong>🔧 Fix:</strong> Interceptor works with Dependency Injection frameworks (Koin, Dagger, Hilt)</li>
+                <li><strong>✅ Improved Detection:</strong> More robust bytecode transformation</li>
+            </ul>
+
+            <h3>Requirements:</h3>
             <ul>
                 <li>Android SDK with platform-tools (ADB)</li>
-                <li>Android emulator API 21+</li>
+                <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li>Add Gradle plugin: <code>id("io.github.sergiydev09.mockkhttp") version "1.2.0"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.12"</code></li>
             </ul>
         """.trimIndent()
     }

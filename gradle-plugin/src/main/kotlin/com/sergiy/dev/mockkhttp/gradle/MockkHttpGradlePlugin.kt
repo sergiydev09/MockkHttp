@@ -26,6 +26,9 @@ class MockkHttpGradlePlugin : Plugin<Project> {
                         "Apply 'com.android.application' or 'com.android.library' first."
             )
 
+        // Extract bundled AAR
+        val aarFile = extractBundledAar(project)
+
         // Add android-library dependency automatically (debug builds only)
         project.afterEvaluate {
             // Check if user accidentally used 'implementation' instead of 'debugImplementation'
@@ -77,10 +80,13 @@ class MockkHttpGradlePlugin : Plugin<Project> {
                 }
             }
 
-            project.dependencies.add(
-                "debugImplementation",
-                "com.sergiy.dev.mockkhttp:android-interceptor:1.0.0"
-            )
+            // Automatically add android-library AAR as file dependency for debug builds
+            project.dependencies.add("debugImplementation", project.files(aarFile))
+
+            // Add transitive dependencies explicitly
+            project.dependencies.add("debugImplementation", "com.squareup.okhttp3:okhttp:4.12.0")
+            project.dependencies.add("debugImplementation", "com.google.code.gson:gson:2.10.1")
+            project.dependencies.add("debugImplementation", "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
         }
 
         // Register bytecode transformation ONLY for debug builds
@@ -106,5 +112,27 @@ class MockkHttpGradlePlugin : Plugin<Project> {
                 )
             }
         }
+    }
+
+    private fun extractBundledAar(project: Project): java.io.File {
+        val aarResourcePath = "/aar/mockk-http-interceptor.aar"
+        val aarInputStream = javaClass.getResourceAsStream(aarResourcePath)
+            ?: throw IllegalStateException("Bundled AAR not found in plugin resources: $aarResourcePath")
+
+        val cacheDir = java.io.File(project.gradle.gradleUserHomeDir, "caches/mockk-http/1.4.12")
+        cacheDir.mkdirs()
+
+        val aarFile = java.io.File(cacheDir, "mockk-http-interceptor.aar")
+
+        // Only extract if not already cached
+        if (!aarFile.exists()) {
+            aarInputStream.use { input ->
+                aarFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+
+        return aarFile
     }
 }

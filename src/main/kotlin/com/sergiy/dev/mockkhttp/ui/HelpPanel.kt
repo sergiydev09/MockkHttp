@@ -45,7 +45,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
             <head>
                 <style>
                     body {
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                        font-family: Dialog, sans-serif;
                         font-size: 12px;
                         color: $textColor;
                         background-color: $backgroundColor;
@@ -54,32 +54,27 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     h1 {
                         color: $linkColor;
                         font-size: 16px;
-                        font-weight: 600;
+                        font-weight: bold;
                         margin-top: 0;
                     }
                     h2 {
                         color: $linkColor;
                         font-size: 13px;
-                        font-weight: 600;
+                        font-weight: bold;
                         margin-top: 20px;
                         margin-bottom: 8px;
                     }
                     code {
                         background-color: $codeBackground;
-                        padding: 2px 5px;
-                        border-radius: 3px;
-                        font-family: 'JetBrains Mono', 'Consolas', monospace;
+                        font-family: Monospaced;
                         font-size: 11px;
                     }
                     pre {
                         background-color: $codeBackground;
                         padding: 10px;
                         border: 1px solid $borderColor;
-                        border-radius: 4px;
-                        overflow-x: auto;
-                        font-family: 'JetBrains Mono', 'Consolas', monospace;
+                        font-family: Monospaced;
                         font-size: 11px;
-                        line-height: 1.4;
                     }
                     .step {
                         margin: 8px 0;
@@ -87,18 +82,15 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     .note {
                         background-color: $noteBackground;
                         padding: 10px;
-                        border-left: 3px solid $noteBorder;
+                        border: 1px solid $noteBorder;
                         margin: 12px 0;
-                        border-radius: 3px;
                     }
                     p {
                         margin: 6px 0;
-                        line-height: 1.5;
                     }
                     ul, ol {
                         margin: 6px 0;
                         padding-left: 20px;
-                        line-height: 1.6;
                     }
                     li {
                         margin: 4px 0;
@@ -115,6 +107,17 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
             <body>
                 <h1>🚀 MockkHttp Setup Guide</h1>
 
+                <div class="note">
+                    <strong>⚠️ IMPORTANT - Version 1.4.12 Stable Release</strong>
+                    <p>
+                        This version (1.4.12) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
+                        Just apply the Gradle plugin and it handles everything.
+                    </p>
+                    <p>
+                        Features: True zero-config setup, PREFER_SETTINGS compatible, works everywhere with files() dependency.
+                    </p>
+                </div>
+
                 <p>
                     MockkHttp uses an OkHttp Interceptor to capture network traffic from your Android app.
                     Follow these steps to integrate it into your project.
@@ -127,18 +130,13 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     <pre>plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.2.0"  // Add this
-}</pre>
-                </div>
+    id("io.github.sergiydev09.mockkhttp") version "1.4.12"
+}
 
-                <h2>🔧 Step 2: Add the Interceptor Dependency</h2>
-
-                <div class="step">
-                    <p><strong>In your app's <code>build.gradle.kts</code> dependencies:</strong></p>
-                    <pre>dependencies {
-    debugImplementation("io.github.sergiydev09:mockk-http-interceptor:1.2.0")
-    // ... your other dependencies
-}</pre>
+// That's it! No dependencies needed.
+// The plugin automatically handles everything.</pre>
+                    <p><em>The plugin automatically adds the interceptor dependency and injects it into all OkHttpClient instances.</em></p>
+                    <p><strong>⚠️ Do NOT add the dependency manually - the plugin does it for you!</strong></p>
                 </div>
 
                 <div class="note">
@@ -152,12 +150,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     <p><strong>Result:</strong> MockkHttp is IMPOSSIBLE to include in production builds, even if you try!</p>
                 </div>
 
-                <div class="note">
-                    <strong>📝 Note:</strong> The Gradle plugin will automatically inject the interceptor into your
-                    OkHttpClient instances at build time. You don't need to modify your code!
-                </div>
-
-                <h2>✅ Step 3: Build Your App</h2>
+                <h2>✅ Step 2: Build Your App</h2>
 
                 <div class="step">
                     <p>Build and run your app in <strong>Debug mode</strong> on an emulator:</p>
@@ -165,7 +158,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 ./gradlew installDebug</pre>
                 </div>
 
-                <h2>📱 Step 4: Start Intercepting</h2>
+                <h2>📱 Step 3: Start Intercepting</h2>
 
                 <div class="step">
                     <ol>
@@ -226,7 +219,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
                 <br/><br/>
                 <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.2.0 | Built for Android Development
+                    MockkHttp v1.4.12 | Fully Automatic Setup | Built for Android Development
                 </p>
             </body>
             </html>

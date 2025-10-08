@@ -1,6 +1,6 @@
 plugins {
-    id("com.android.library") version "8.2.0"
-    id("org.jetbrains.kotlin.android") version "2.1.0"
+    id("com.android.library")
+    id("org.jetbrains.kotlin.android")
     id("maven-publish")
 }
 
@@ -9,8 +9,8 @@ repositories {
     mavenCentral()
 }
 
-group = "com.sergiy.dev.mockkhttp"
-version = "1.2.0"
+group = "com.github.sergiydev09.MockkHttp"
+version = "1.4.12"
 
 android {
     namespace = "com.sergiy.dev.mockkhttp.interceptor"
@@ -56,9 +56,8 @@ afterEvaluate {
         publications {
             create<MavenPublication>("release") {
                 from(components["release"])
-                groupId = "com.sergiy.dev.mockkhttp"
-                artifactId = "android-interceptor"
-                version = "1.2.0"
+                // groupId and version inherited from project
+                artifactId = "mockk-http-interceptor"
             }
         }
     }
