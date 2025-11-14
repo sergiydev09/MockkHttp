@@ -182,6 +182,56 @@ class AppManager(project: Project) {
     }
 
     /**
+     * Check if an app has MockkHttp interceptor installed.
+     * Returns true if the app contains the MockkHttpInterceptor class.
+     */
+    private fun hasMockkHttpInstalled(device: IDevice, packageName: String): Boolean {
+        try {
+            // Get APK path
+            val pathReceiver = EmulatorManager.CollectingOutputReceiver()
+            device.executeShellCommand("pm path $packageName", pathReceiver, 5, TimeUnit.SECONDS)
+
+            val apkPath = pathReceiver.output
+                .lines()
+                .firstOrNull { it.startsWith("package:") }
+                ?.removePrefix("package:")
+                ?.trim()
+
+            if (apkPath.isNullOrBlank()) {
+                logger.debug("Could not find APK path for $packageName")
+                return false
+            }
+
+            logger.debug("APK path for $packageName: $apkPath")
+
+            // Use dexdump to list classes in the APK
+            // Looking for: com.sergiy.dev.mockkhttp.interceptor.MockkHttpInterceptor
+            val dexReceiver = EmulatorManager.CollectingOutputReceiver()
+            device.executeShellCommand(
+                "dexdump -f $apkPath | grep 'com.sergiy.dev.mockkhttp.interceptor.MockkHttpInterceptor'",
+                dexReceiver,
+                10,
+                TimeUnit.SECONDS
+            )
+
+            val dexOutput = dexReceiver.output
+            val hasMockkHttp = dexOutput.contains("MockkHttpInterceptor")
+
+            if (hasMockkHttp) {
+                logger.info("✅ $packageName HAS MockkHttp interceptor!")
+            } else {
+                logger.debug("📝 $packageName does NOT have MockkHttp")
+            }
+
+            return hasMockkHttp
+
+        } catch (e: Exception) {
+            logger.debug("Failed to check MockkHttp for $packageName: ${e.message}")
+            return false
+        }
+    }
+
+    /**
      * Create AppInfo from package name.
      * Parses package details if possible.
      */
@@ -189,6 +239,9 @@ class AppManager(project: Project) {
         try {
             // Get UID using reliable method
             val uid = getAppUid(device, packageName)
+
+            // Check if app has MockkHttp interceptor
+            val hasMockkHttp = hasMockkHttpInstalled(device, packageName)
 
             // Get version info from dumpsys
             val receiver = EmulatorManager.CollectingOutputReceiver()
@@ -218,7 +271,8 @@ class AppManager(project: Project) {
                 versionName = versionName,
                 versionCode = versionCode,
                 isSystemApp = false,  // We're only getting third-party apps
-                uid = uid
+                uid = uid,
+                hasMockkHttp = hasMockkHttp
             )
 
         } catch (e: Exception) {
@@ -229,7 +283,8 @@ class AppManager(project: Project) {
                 versionName = null,
                 versionCode = null,
                 isSystemApp = false,
-                uid = null
+                uid = null,
+                hasMockkHttp = false
             )
         }
     }

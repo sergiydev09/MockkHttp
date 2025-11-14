@@ -436,15 +436,26 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun refreshApps() {
         val emulator = selectedEmulator ?: return
-        val apps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
+        val allApps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
+
+        // Filter to show only apps with MockkHttp interceptor
+        val mockkHttpApps = allApps.filter { it.hasMockkHttp }
+
+        logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp out of ${allApps.size} total apps")
 
         appComboBox.removeAllItems()
-        apps.forEach { app ->
-            appComboBox.addItem(app)
-        }
 
-        if (apps.isNotEmpty()) {
-            appComboBox.selectedIndex = 0
+        if (mockkHttpApps.isEmpty()) {
+            // Show a placeholder message if no MockkHttp apps found
+            logger.warn("⚠️ No apps with MockkHttp found. Make sure you've added the Gradle plugin to your app.")
+        } else {
+            mockkHttpApps.forEach { app ->
+                appComboBox.addItem(app)
+            }
+
+            if (mockkHttpApps.isNotEmpty()) {
+                appComboBox.selectedIndex = 0
+            }
         }
     }
 

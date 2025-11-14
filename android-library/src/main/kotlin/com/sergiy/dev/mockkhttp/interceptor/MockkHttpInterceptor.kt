@@ -44,6 +44,7 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         private const val READ_TIMEOUT_MS = 60000  // 60s for user to modify
         private const val PING_TIMEOUT_MS = 500    // Fast ping timeout
         private const val PING_CACHE_DURATION_MS = 5000  // Cache ping result for 5s
+        private const val DEDUP_WINDOW_MS = 500  // 500ms window to detect duplicate requests
 
         /**
          * Enable/disable interceptor globally.
@@ -59,6 +60,15 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         @JvmStatic
         var debugMode = true
 
+        /**
+         * Enable/disable request deduplication.
+         * When enabled, requests with same method+URL within 500ms will only be captured once.
+         * This prevents duplicate flows from multiple OkHttpClient instances.
+         * Set to false to capture ALL requests (useful for detecting app-level duplicate calls).
+         */
+        @JvmStatic
+        var enableDeduplication = true
+
         // Plugin connection state cache
         @Volatile
         private var lastPingTime: Long = 0
@@ -67,6 +77,77 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         @Volatile
         private var failedAttempts: Int = 0
         private const val MAX_FAILED_ATTEMPTS = 3  // After 3 fails, stop trying
+
+        // Request deduplication: Track active requests to prevent duplicates from multiple OkHttp clients
+        private val activeRequests = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        @Volatile
+        private var lastCleanupTime: Long = 0
+        private const val CLEANUP_INTERVAL_MS = 10000  // Cleanup old entries every 10s
+
+        /**
+         * Check if this request is already being captured by another OkHttpClient instance.
+         * Returns true if this is a duplicate within the deduplication window.
+         */
+        private fun isDuplicateRequest(request: Request): Boolean {
+            if (!enableDeduplication) return false
+
+            val now = System.currentTimeMillis()
+
+            // Periodic cleanup of old entries to prevent memory leak
+            if (now - lastCleanupTime > CLEANUP_INTERVAL_MS) {
+                cleanupOldRequests(now)
+                lastCleanupTime = now
+            }
+
+            // Create key: method + URL (ignore query params differences for dedup)
+            val key = "${request.method}:${request.url.toUrl().run { "$protocol://$host$path" }}"
+
+            // Try to register this request
+            val existingTimestamp = activeRequests.putIfAbsent(key, now)
+
+            if (existingTimestamp != null) {
+                // Request already exists, check if within dedup window
+                val timeSinceFirst = now - existingTimestamp
+                if (timeSinceFirst < DEDUP_WINDOW_MS) {
+                    // Duplicate detected within window
+                    Log.d(TAG, "🔄 Duplicate request detected (${timeSinceFirst}ms ago): ${request.method} ${request.url}")
+                    return true
+                } else {
+                    // Outside window, update timestamp and allow
+                    activeRequests[key] = now
+                }
+            }
+
+            return false
+        }
+
+        /**
+         * Mark a request as completed (for cleanup).
+         */
+        private fun markRequestCompleted(request: Request) {
+            if (!enableDeduplication) return
+
+            val key = "${request.method}:${request.url.toUrl().run { "$protocol://$host$path" }}"
+            activeRequests.remove(key)
+        }
+
+        /**
+         * Remove old entries from activeRequests map to prevent memory leak.
+         */
+        private fun cleanupOldRequests(now: Long) {
+            val iterator = activeRequests.entries.iterator()
+            var removed = 0
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (now - entry.value > DEDUP_WINDOW_MS * 2) {
+                    iterator.remove()
+                    removed++
+                }
+            }
+            if (removed > 0) {
+                Log.d(TAG, "🧹 Cleaned up $removed old request entries")
+            }
+        }
 
         /**
          * Obtain Application context via reflection when constructor context is null.
@@ -106,34 +187,96 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         val request = chain.request()
         val startTime = System.currentTimeMillis()
 
-        // Proceed with request to get response
-        val response: Response
-        try {
-            response = chain.proceed(request)
-        } catch (e: IOException) {
-            // Network error, can't intercept
-            throw e
+        // Check if this is a duplicate request from another OkHttpClient instance
+        if (isDuplicateRequest(request)) {
+            // Skip capturing, another client already captured this request
+            return chain.proceed(request)
         }
-
-        val duration = System.currentTimeMillis() - startTime
 
         // Check if plugin is connected
         if (!isPluginConnected()) {
-            return response
+            markRequestCompleted(request)
+            return chain.proceed(request)
         }
 
-        return try {
-            if (debugMode) {
-                // Debug mode: pause and wait for modification
-                val result = sendToPluginAndWait(request, response, duration) ?: response
-                result
-            } else {
-                // Recording mode: just send async without waiting
+        // STEP 1: Check plugin mode and mock availability
+        val mockCheckResponse = checkForMock(request)
+        val pluginMode = mockCheckResponse?.mode ?: "RECORDING"
+
+        Log.d(TAG, "🎯 Plugin mode: $pluginMode, Has mock: ${mockCheckResponse?.hasMock ?: false}")
+
+        // STEP 2: Decide flow based on mode
+        return when (pluginMode) {
+            "RECORDING" -> {
+                // RECORDING: Make real call, send async, don't block
+                val response = chain.proceed(request)
+                val duration = System.currentTimeMillis() - startTime
                 sendToPluginAsync(request, response, duration)
+                markRequestCompleted(request)
                 response
             }
-        } catch (e: Exception) {
-            response
+
+            "DEBUG" -> {
+                // DEBUG: Use mock if available (no network), always open dialog (blocking)
+                val response: Response
+                val duration: Long
+
+                if (mockCheckResponse?.hasMock == true) {
+                    Log.d(TAG, "⚡ Mock available! Skipping network call")
+                    response = buildMockResponse(request, mockCheckResponse)
+                    duration = System.currentTimeMillis() - startTime
+                } else {
+                    response = chain.proceed(request)
+                    duration = System.currentTimeMillis() - startTime
+                }
+
+                // ALWAYS show dialog in DEBUG mode
+                val modifiedResponse = sendToPluginAndWait(request, response, duration) ?: response
+                markRequestCompleted(request)
+                modifiedResponse
+            }
+
+            "MOCKK" -> {
+                // MOCKK: Use mock if available (no network), NO dialog
+                if (mockCheckResponse?.hasMock == true) {
+                    Log.d(TAG, "⚡ Mock available! Skipping network call, NO dialog")
+                    markRequestCompleted(request)
+                    buildMockResponse(request, mockCheckResponse)
+                } else {
+                    // No mock, make real call
+                    val response = chain.proceed(request)
+                    markRequestCompleted(request)
+                    response
+                }
+            }
+
+            "MOCKK_DEBUG" -> {
+                // MOCKK_DEBUG: Use mock if available (no network), ALWAYS show dialog (blocking)
+                val response: Response
+                val duration: Long
+
+                if (mockCheckResponse?.hasMock == true) {
+                    Log.d(TAG, "⚡ Mock available! Skipping network call, will show dialog with mock")
+                    response = buildMockResponse(request, mockCheckResponse)
+                    duration = System.currentTimeMillis() - startTime
+                } else {
+                    response = chain.proceed(request)
+                    duration = System.currentTimeMillis() - startTime
+                }
+
+                // ALWAYS show dialog in MOCKK_DEBUG mode
+                val modifiedResponse = sendToPluginAndWait(request, response, duration) ?: response
+                markRequestCompleted(request)
+                modifiedResponse
+            }
+
+            else -> {
+                // Unknown mode, fallback to simple pass-through
+                Log.w(TAG, "Unknown mode: $pluginMode, using pass-through")
+                val response = chain.proceed(request)
+                markRequestCompleted(request)
+                response
+            }
         }
     }
 
@@ -248,6 +391,98 @@ class MockkHttpInterceptor @JvmOverloads constructor(
             } catch (e: Exception) {
             }
         }.start()
+    }
+
+    /**
+     * Check if a mock exists for this request BEFORE making the real network call.
+     * Returns MockCheckResponse if mock available, null otherwise.
+     * This allows skipping the expensive network call when in Mockk mode.
+     */
+    private fun checkForMock(request: Request): MockCheckResponse? {
+        return try {
+            val socket = Socket(pluginHost, pluginPort)
+            socket.soTimeout = CONNECTION_TIMEOUT_MS  // Fast timeout for mock check
+
+            socket.use {
+                // Create mock check request (no response data, just request info)
+                val mockCheckRequest = MockCheckRequest(
+                    type = "CHECK_MOCK",
+                    request = RequestData(
+                        method = request.method,
+                        url = request.url.toString(),
+                        headers = request.headers.toMap(),
+                        body = ""
+                    ),
+                    projectId = null,
+                    packageName = appContext?.packageName
+                )
+
+                // Send check request
+                val json = gson.toJson(mockCheckRequest) + "\n"
+                it.getOutputStream().write(json.toByteArray())
+                it.getOutputStream().flush()
+
+                // Wait for response
+                val reader = it.getInputStream().bufferedReader()
+                val responseJson = reader.readLine()
+
+                if (responseJson == null || responseJson == "PONG") {
+                    return null
+                }
+
+                gson.fromJson(responseJson, MockCheckResponse::class.java)
+            }
+        } catch (e: SocketTimeoutException) {
+            Log.d(TAG, "Mock check timeout for ${request.url}")
+            null
+        } catch (e: IOException) {
+            Log.d(TAG, "Mock check failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Build an OkHttp Response from mock data WITHOUT making a real network call.
+     */
+    private fun buildMockResponse(request: Request, mockData: MockCheckResponse): Response {
+        val statusCode = mockData.statusCode ?: 200
+        val body = mockData.body ?: ""
+        val headers = mockData.headers ?: emptyMap()
+
+        val contentType = headers["Content-Type"] ?: "application/json"
+        val responseBody = body.toResponseBody(contentType.toMediaType())
+
+        var builder = Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(statusCode)
+            .message(getHttpMessage(statusCode))
+            .body(responseBody)
+
+        // Add headers
+        for ((key, value) in headers) {
+            builder = builder.header(key, value)
+        }
+
+        Log.d(TAG, "✅ Built mock response (${mockData.mockRuleName ?: "unnamed"}): $statusCode")
+        return builder.build()
+    }
+
+    /**
+     * Get HTTP status message for code.
+     */
+    private fun getHttpMessage(code: Int): String = when (code) {
+        200 -> "OK"
+        201 -> "Created"
+        204 -> "No Content"
+        400 -> "Bad Request"
+        401 -> "Unauthorized"
+        403 -> "Forbidden"
+        404 -> "Not Found"
+        500 -> "Internal Server Error"
+        502 -> "Bad Gateway"
+        503 -> "Service Unavailable"
+        else -> "Unknown"
     }
 
     /**

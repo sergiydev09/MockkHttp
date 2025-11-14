@@ -73,3 +73,41 @@ data class ResumeFlowRequest(
     @com.google.gson.annotations.SerializedName("modified_response")
     val modifiedResponse: ModifiedResponseData? = null
 )
+
+/**
+ * Mock check request from Android app - sent BEFORE making real network call.
+ * This allows the plugin to respond with a mock if available, skipping the real network call.
+ */
+data class MockCheckRequest(
+    val type: String,  // "CHECK_MOCK"
+    val request: MockRequestData,
+    val projectId: String? = null,
+    val packageName: String? = null
+)
+
+/**
+ * Simplified request data for mock checking (no response needed).
+ */
+data class MockRequestData(
+    val method: String,
+    val url: String,
+    val headers: Map<String, String>,
+    val body: String
+)
+
+/**
+ * Mock check response - plugin responds with mock data if available.
+ */
+data class MockCheckResponse(
+    val hasMock: Boolean,
+    val mode: String? = null,  // Current plugin mode: "RECORDING", "DEBUG", "MOCKK", "MOCKK_DEBUG"
+    val statusCode: Int? = null,
+    val headers: Map<String, String>? = null,
+    val body: String? = null,
+    val mockRuleName: String? = null
+) {
+    companion object {
+        fun noMock(mode: String) = MockCheckResponse(hasMock = false, mode = mode)
+        fun noMockUnknown() = MockCheckResponse(hasMock = false, mode = "RECORDING")
+    }
+}

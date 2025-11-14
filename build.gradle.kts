@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.4.13"
+version = "1.4.17"
 
 repositories {
     mavenCentral()
@@ -50,16 +50,23 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.4.13 - Stable Release</h3>
+            <h3>Version 1.4.17 - Smart App Filtering</h3>
             <ul>
-                <li><strong>🎯 No Repository Needed:</strong> Uses files() dependency - works everywhere</li>
-                <li><strong>✅ PREFER_SETTINGS Compatible:</strong> No repository configuration required</li>
-                <li><strong>🚀 Zero Setup:</strong> Just apply the plugin and it works</li>
+                <li><strong>🎭 MAJOR UX:</strong> Apps dropdown now shows ONLY apps with MockkHttp installed!</li>
+                <li><strong>🔍 Auto-Detection:</strong> Plugin automatically scans APKs for MockkHttpInterceptor class</li>
+                <li><strong>✨ Visual Indicator:</strong> MockkHttp-enabled apps marked with 🎭 emoji</li>
+                <li><strong>📝 Clear Logging:</strong> Shows exactly how many MockkHttp apps found vs total</li>
+            </ul>
+
+            <h3>Previous: Version 1.4.16 - Perfect Mode Synchronization</h3>
+            <ul>
+                <li><strong>🔄 CRITICAL FIX:</strong> Interceptor now perfectly synced with IDE plugin mode changes</li>
+                <li><strong>⚡ MOCKK_DEBUG Mode:</strong> Pre-checks for mock (no network), then opens dialog instantly</li>
             </ul>
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.13"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.17"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! No repository configuration needed</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
@@ -81,7 +88,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.13"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.17"</code></li>
             </ul>
         """.trimIndent()
     }

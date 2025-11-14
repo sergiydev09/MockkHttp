@@ -348,25 +348,61 @@ class GlobalOkHttpInterceptorServer {
                     return
                 }
 
-                // Parse flow data
-                val flowData = try {
-                    gson.fromJson(json, AndroidFlowData::class.java)
+                // Detect message type by checking for "type" field
+                val messageType = try {
+                    val jsonObject = com.google.gson.JsonParser.parseString(json).asJsonObject
+                    jsonObject.get("type")?.asString
                 } catch (e: Exception) {
-                    logger.error("Failed to parse flow data", e)
-                    writer.println(gson.toJson(ModifiedResponseData.original()))
-                    return
+                    null
                 }
 
-                logger.info("🔴 INTERCEPTED: ${flowData.request.method} ${flowData.request.url}")
-                logger.info("   📦 Package: ${flowData.packageName ?: "unknown"}")
-                logger.info("   🎯 Project hint: ${flowData.projectId ?: "none"}")
+                when (messageType) {
+                    "CHECK_MOCK" -> {
+                        // Handle mock check request
+                        val mockCheckRequest = try {
+                            gson.fromJson(json, com.sergiy.dev.mockkhttp.model.MockCheckRequest::class.java)
+                        } catch (e: Exception) {
+                            logger.error("Failed to parse mock check request", e)
+                            writer.println(gson.toJson(com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMockUnknown()))
+                            return
+                        }
 
-                // Route flow to appropriate project(s)
-                val response = routeFlow(flowData)
+                        logger.debug("🔍 CHECK_MOCK: ${mockCheckRequest.request.method} ${mockCheckRequest.request.url}")
 
-                val responseJson = gson.toJson(response)
-                writer.println(responseJson)
-                logger.debug("✅ Response sent back to app")
+                        // Find matching mock rule
+                        val mockResponse = findMockForRequest(mockCheckRequest)
+                        val responseJson = gson.toJson(mockResponse)
+                        writer.println(responseJson)
+
+                        if (mockResponse.hasMock) {
+                            logger.info("⚡ Mock found! Responding with mock: ${mockResponse.mockRuleName}")
+                        } else {
+                            logger.debug("📝 No mock found, app will make real network call")
+                        }
+                    }
+
+                    else -> {
+                        // Handle normal flow data (FLOW type or no type field)
+                        val flowData = try {
+                            gson.fromJson(json, AndroidFlowData::class.java)
+                        } catch (e: Exception) {
+                            logger.error("Failed to parse flow data", e)
+                            writer.println(gson.toJson(ModifiedResponseData.original()))
+                            return
+                        }
+
+                        logger.info("🔴 INTERCEPTED: ${flowData.request.method} ${flowData.request.url}")
+                        logger.info("   📦 Package: ${flowData.packageName ?: "unknown"}")
+                        logger.info("   🎯 Project hint: ${flowData.projectId ?: "none"}")
+
+                        // Route flow to appropriate project(s)
+                        val response = routeFlow(flowData)
+
+                        val responseJson = gson.toJson(response)
+                        writer.println(responseJson)
+                        logger.debug("✅ Response sent back to app")
+                    }
+                }
 
             } catch (e: Exception) {
                 logger.error("Error handling client", e)
@@ -475,6 +511,122 @@ class GlobalOkHttpInterceptorServer {
         // 5. No match found
         logger.info("⚠️ Could not find matching project for package '${flowData.packageName}'")
         logger.info("   Available projects with filters: ${registeredProjects.values.map { "${it.projectName} (${it.packageNameFilter ?: "no filter"})" }}")
+        return null
+    }
+
+    /**
+     * Find mock for a CHECK_MOCK request.
+     * Returns MockCheckResponse with mock data if available.
+     */
+    private fun findMockForRequest(mockCheckRequest: com.sergiy.dev.mockkhttp.model.MockCheckRequest): com.sergiy.dev.mockkhttp.model.MockCheckResponse {
+        // Find the target project (same logic as findTargetProject, but using MockCheckRequest)
+        val targetProject = findTargetProjectForMockCheck(mockCheckRequest)
+
+        if (targetProject == null) {
+            logger.debug("No target project found for mock check")
+            return com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMockUnknown()
+        }
+
+        val currentMode = when (targetProject.mode) {
+            InterceptMode.RECORDING -> "RECORDING"
+            InterceptMode.DEBUG -> "DEBUG"
+            InterceptMode.MOCKK -> "MOCKK"
+            InterceptMode.MOCKK_DEBUG -> "MOCKK_DEBUG"
+        }
+
+        // Only do mock lookup if in MOCKK or MOCKK_DEBUG mode
+        if (targetProject.mode != InterceptMode.MOCKK && targetProject.mode != InterceptMode.MOCKK_DEBUG) {
+            logger.debug("Project ${targetProject.projectName} is in ${targetProject.mode} mode - no mock lookup needed")
+            return com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMock(currentMode)
+        }
+
+        // Get MockkRulesStore from the project
+        val mockkRulesStore = try {
+            com.sergiy.dev.mockkhttp.store.MockkRulesStore.getInstance(targetProject.project)
+        } catch (e: Exception) {
+            logger.error("Failed to get MockkRulesStore", e)
+            return com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMock(currentMode)
+        }
+
+        // Parse URL to extract host, path, query params
+        val (host, path, queryParams) = try {
+            val url = java.net.URI.create(mockCheckRequest.request.url).toURL()
+            val host = url.host
+            val path = url.path.ifEmpty { "/" }
+            val queryParams = url.query?.split("&")?.associate { param ->
+                val (key, value) = param.split("=", limit = 2).let {
+                    it[0] to (it.getOrNull(1) ?: "")
+                }
+                key to value
+            } ?: emptyMap()
+            Triple(host, path, queryParams)
+        } catch (e: Exception) {
+            logger.error("Failed to parse URL for mock check: ${mockCheckRequest.request.url}", e)
+            return com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMock(currentMode)
+        }
+
+        // Find matching mock rule
+        val matchingRule = mockkRulesStore.findMatchingRuleObject(
+            method = mockCheckRequest.request.method,
+            host = host,
+            path = path,
+            queryParams = queryParams
+        )
+
+        if (matchingRule != null) {
+            logger.debug("Found matching mock rule: ${matchingRule.name}")
+            return com.sergiy.dev.mockkhttp.model.MockCheckResponse(
+                hasMock = true,
+                mode = currentMode,
+                statusCode = matchingRule.statusCode,
+                headers = matchingRule.headers,
+                body = matchingRule.content,
+                mockRuleName = matchingRule.name
+            )
+        }
+
+        logger.debug("No matching mock rule found")
+        return com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMock(currentMode)
+    }
+
+    /**
+     * Find target project for mock check request (similar to findTargetProject but for MockCheckRequest).
+     */
+    private fun findTargetProjectForMockCheck(mockCheckRequest: com.sergiy.dev.mockkhttp.model.MockCheckRequest): ProjectRegistration? {
+        // 1. If request has explicit project ID, use that
+        if (mockCheckRequest.projectId != null) {
+            val project = registeredProjects[mockCheckRequest.projectId]
+            if (project != null) {
+                logger.debug("Matched by project ID: ${project.projectName}")
+                return project
+            }
+        }
+
+        // 2. STRICT package name filtering
+        if (mockCheckRequest.packageName != null) {
+            val matchingProjects = registeredProjects.values.filter {
+                it.packageNameFilter != null && it.packageNameFilter == mockCheckRequest.packageName
+            }
+
+            if (matchingProjects.isNotEmpty()) {
+                return matchingProjects.first()
+            }
+        }
+
+        // 3. If only one project registered AND it has NO filter (catch-all), use it
+        if (registeredProjects.size == 1) {
+            val project = registeredProjects.values.first()
+            if (project.packageNameFilter == null) {
+                return project
+            }
+        }
+
+        // 4. Look for catch-all projects (no filter)
+        val catchAllProjects = registeredProjects.values.filter { it.packageNameFilter == null }
+        if (catchAllProjects.isNotEmpty()) {
+            return catchAllProjects.first()
+        }
+
         return null
     }
 }

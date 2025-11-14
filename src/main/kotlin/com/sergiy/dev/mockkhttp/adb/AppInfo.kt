@@ -9,13 +9,21 @@ data class AppInfo(
     val versionName: String?,
     val versionCode: Int?,
     val isSystemApp: Boolean,
-    val uid: Int? = null  // Android UID for network filtering
+    val uid: Int? = null,  // Android UID for network filtering
+    val hasMockkHttp: Boolean = false  // Whether app has MockkHttp interceptor
 ) {
     /**
      * Display name for UI
      */
     val displayName: String
-        get() = appName ?: packageName
+        get() {
+            val baseName = appName ?: packageName
+            return if (hasMockkHttp) {
+                "🎭 $baseName"  // Mask emoji indicates MockkHttp is active
+            } else {
+                baseName
+            }
+        }
     
     /**
      * Full description for logging
