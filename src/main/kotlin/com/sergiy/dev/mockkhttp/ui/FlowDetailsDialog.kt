@@ -9,6 +9,7 @@ import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
+import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -19,15 +20,13 @@ import javax.swing.text.DefaultHighlighter
 import javax.swing.text.Highlighter
 
 /**
- * Dialog to show complete flow details (read-only, copiable).
- * Includes search functionality with highlighting.
+ * Dialog to show flow details with search functionality.
  */
 class FlowDetailsDialog(
     project: Project,
     private val flow: HttpFlowData
 ) : DialogWrapper(project) {
 
-    private lateinit var textArea: JTextArea
     private lateinit var searchField: JBTextField
     private lateinit var searchPanel: JPanel
     private lateinit var matchLabel: JLabel
@@ -36,48 +35,214 @@ class FlowDetailsDialog(
     private var currentMatchIndex = -1
     private val matchPositions = mutableListOf<Int>()
 
+    // All text areas for search across sections
+    private val searchableTextAreas = mutableListOf<JTextArea>()
+
     init {
-        title = "Flow Details: ${flow.request.method} ${flow.request.url}"
+        title = "Flow Details: ${flow.request.method} ${extractPath(flow.request.url)}"
         init()
     }
 
     override fun createCenterPanel(): JComponent {
-        val panel = JPanel(BorderLayout())
-        panel.preferredSize = Dimension(900, 600)
+        val mainPanel = JPanel(BorderLayout())
+        mainPanel.preferredSize = Dimension(900, 700)
 
-        // Create text area with all flow details
-        textArea = JTextArea().apply {
-            isEditable = false
-            font = Font("Monospaced", Font.PLAIN, 12)
-            text = buildFlowDetails()
-            lineWrap = false
-            caretPosition = 0
-        }
-
-        val scrollPane = JBScrollPane(textArea)
-
-        // Search panel at top (hidden by default)
+        // Create search panel (hidden by default)
         searchPanel = createSearchPanel()
         searchPanel.isVisible = false
 
-        // Create vertical panel for search + mock banner
+        // Create top panel with search + mock banner
         val topPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             add(searchPanel)
-
-            // Add mock banner if mock was applied
             if (flow.mockApplied) {
                 add(createMockBanner())
             }
         }
 
-        panel.add(topPanel, BorderLayout.NORTH)
-        panel.add(scrollPane, BorderLayout.CENTER)
+        // Create main content panel
+        val contentPanel = JPanel()
+        contentPanel.layout = BoxLayout(contentPanel, BoxLayout.Y_AXIS)
+
+        // Flow Information
+        contentPanel.add(createSectionHeader("Flow Information"))
+        contentPanel.add(createInfoPanel())
+        contentPanel.add(Box.createVerticalStrut(15))
+
+        // Request
+        contentPanel.add(createSectionHeader("Request"))
+        contentPanel.add(createRequestPanel())
+        contentPanel.add(Box.createVerticalStrut(15))
+
+        // Response
+        if (flow.response != null) {
+            contentPanel.add(createSectionHeader("Response"))
+            contentPanel.add(createResponsePanel())
+        } else {
+            contentPanel.add(createSectionHeader("Response"))
+            contentPanel.add(createLabel("Response pending or not available", JBColor.GRAY))
+        }
+
+        val scrollPane = JBScrollPane(contentPanel).apply {
+            border = JBUI.Borders.empty()
+        }
+
+        mainPanel.add(topPanel, BorderLayout.NORTH)
+        mainPanel.add(scrollPane, BorderLayout.CENTER)
 
         // Register Cmd+F / Ctrl+F to show search
-        registerFindShortcut(panel)
+        registerFindShortcut(mainPanel)
+
+        return mainPanel
+    }
+
+    private fun createSectionHeader(text: String): JPanel {
+        return JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(5, 0)
+            alignmentX = java.awt.Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+            add(JLabel(text).apply {
+                font = font.deriveFont(Font.BOLD, 14f)
+                foreground = JBColor.namedColor("Label.foreground", JBColor.foreground())
+            }, BorderLayout.WEST)
+            add(JSeparator(), BorderLayout.SOUTH)
+        }
+    }
+
+    private fun createLabel(text: String, color: JBColor? = null): JLabel {
+        return JLabel(text).apply {
+            font = Font("Monospaced", Font.PLAIN, 12)
+            if (color != null) foreground = color
+            alignmentX = java.awt.Component.LEFT_ALIGNMENT
+        }
+    }
+
+    private fun createInfoPanel(): JPanel {
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        panel.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+
+        panel.add(createLabel("Flow ID: ${flow.flowId}"))
+        panel.add(createLabel("Timestamp: ${flow.timestamp}"))
+        panel.add(createLabel("Duration: ${String.format("%.2f ms", flow.duration * 1000)}"))
+        panel.add(createLabel("Paused: ${flow.paused}"))
 
         return panel
+    }
+
+    private fun createRequestPanel(): JPanel {
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        panel.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+
+        // Method
+        panel.add(createLabel("Method: ${flow.request.method}").apply {
+            foreground = when (flow.request.method) {
+                "GET" -> JBColor.GREEN.darker()
+                "POST" -> JBColor.BLUE
+                "PUT" -> JBColor.ORANGE
+                "DELETE" -> JBColor.RED
+                else -> JBColor.GRAY
+            }
+        })
+
+        // URL
+        panel.add(createLabel("URL: ${flow.request.url}"))
+        panel.add(Box.createVerticalStrut(10))
+
+        // Headers - as normal labels, not textarea
+        if (flow.request.headers.isNotEmpty()) {
+            panel.add(createLabel("Headers (${flow.request.headers.size}):").apply {
+                font = font.deriveFont(Font.BOLD)
+            })
+            panel.add(Box.createVerticalStrut(5))
+            flow.request.headers.forEach { (key, value) ->
+                panel.add(createLabel("  $key: $value"))
+            }
+            panel.add(Box.createVerticalStrut(10))
+        }
+
+        // Body - ONLY this should be in a textarea
+        if (flow.request.content.isNotEmpty()) {
+            panel.add(createLabel("Body (${flow.request.content.length} bytes):").apply {
+                font = font.deriveFont(Font.BOLD)
+            })
+            panel.add(Box.createVerticalStrut(5))
+            val formattedContent = formatJsonIfPossible(flow.request.content)
+            val bodyArea = createReadOnlyTextArea(formattedContent, rows = 15)
+            panel.add(JBScrollPane(bodyArea).apply {
+                maximumSize = Dimension(Int.MAX_VALUE, 400)
+                alignmentX = java.awt.Component.LEFT_ALIGNMENT
+                border = JBUI.Borders.empty()
+            })
+        }
+
+        return panel
+    }
+
+    private fun createResponsePanel(): JPanel {
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        panel.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+
+        val response = flow.response!!
+
+        // Status
+        panel.add(createLabel("Status: ${response.statusCode} ${response.reason}").apply {
+            foreground = when (response.statusCode) {
+                in 200..299 -> JBColor.GREEN.darker()
+                in 300..399 -> JBColor.BLUE
+                in 400..499 -> JBColor.ORANGE
+                in 500..599 -> JBColor.RED
+                else -> JBColor.GRAY
+            }
+            font = font.deriveFont(Font.BOLD)
+        })
+
+        panel.add(createLabel("Content-Type: ${response.getContentType() ?: "unknown"}"))
+        panel.add(Box.createVerticalStrut(10))
+
+        // Headers - as normal labels, not textarea
+        if (response.headers.isNotEmpty()) {
+            panel.add(createLabel("Headers (${response.headers.size}):").apply {
+                font = font.deriveFont(Font.BOLD)
+            })
+            panel.add(Box.createVerticalStrut(5))
+            response.headers.forEach { (key, value) ->
+                panel.add(createLabel("  $key: $value"))
+            }
+            panel.add(Box.createVerticalStrut(10))
+        }
+
+        // Body - ONLY this should be in a textarea
+        if (response.content.isNotEmpty()) {
+            panel.add(createLabel("Body (${response.content.length} bytes):").apply {
+                font = font.deriveFont(Font.BOLD)
+            })
+            panel.add(Box.createVerticalStrut(5))
+            val formattedContent = formatJsonIfPossible(response.content)
+            val bodyArea = createReadOnlyTextArea(formattedContent, rows = 20)
+            panel.add(JBScrollPane(bodyArea).apply {
+                maximumSize = Dimension(Int.MAX_VALUE, 500)
+                alignmentX = java.awt.Component.LEFT_ALIGNMENT
+                border = JBUI.Borders.empty()
+            })
+        }
+
+        return panel
+    }
+
+    private fun createReadOnlyTextArea(text: String, rows: Int): JTextArea {
+        return JTextArea(text).apply {
+            isEditable = false
+            lineWrap = false
+            font = Font("Monospaced", Font.PLAIN, 12)
+            background = UIManager.getColor("TextArea.background")
+            border = JBUI.Borders.empty(8)
+            this.rows = rows
+            caretPosition = 0
+            searchableTextAreas.add(this)
+        }
     }
 
     private fun createMockBanner(): JPanel {
@@ -112,7 +277,6 @@ class FlowDetailsDialog(
     private fun createSearchPanel(): JPanel {
         val panel = JPanel(BorderLayout())
         panel.border = BorderFactory.createEmptyBorder(5, 5, 5, 5)
-        // Use search field background color from IDE theme
         panel.background = JBColor.namedColor("SearchEverywhere.SearchField.background", JBColor.PanelBackground)
 
         searchField = JBTextField().apply {
@@ -122,7 +286,6 @@ class FlowDetailsDialog(
 
         matchLabel = JLabel("")
 
-        // Layout
         val contentPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.X_AXIS)
             background = panel.background
@@ -137,7 +300,7 @@ class FlowDetailsDialog(
 
         panel.add(contentPanel, BorderLayout.CENTER)
 
-        // Perform search as user types
+        // Search as user types
         searchField.document.addDocumentListener(object : javax.swing.event.DocumentListener {
             override fun insertUpdate(e: javax.swing.event.DocumentEvent?) {
                 performSearch()
@@ -200,7 +363,6 @@ class FlowDetailsDialog(
             }
         }
 
-        // Cmd+F on Mac, Ctrl+F on Windows/Linux
         val shortcut = KeyStroke.getKeyStroke(
             KeyEvent.VK_F,
             java.awt.Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx
@@ -219,7 +381,6 @@ class FlowDetailsDialog(
         clearHighlights()
         matchPositions.clear()
         currentMatchIndex = -1
-        textArea.requestFocusInWindow()
     }
 
     private fun performSearch() {
@@ -235,24 +396,27 @@ class FlowDetailsDialog(
         matchPositions.clear()
         currentMatchIndex = -1
 
-        val text = textArea.text
-        val lowerText = text.lowercase()
         val lowerQuery = query.lowercase()
 
-        var index = lowerText.indexOf(lowerQuery)
-        while (index >= 0) {
-            matchPositions.add(index)
-            try {
-                textArea.highlighter.addHighlight(index, index + query.length, highlighter)
-            } catch (_: Exception) {
-                // Ignore highlighting errors
+        // Search across all text areas
+        for (textArea in searchableTextAreas) {
+            val text = textArea.text
+            val lowerText = text.lowercase()
+
+            var index = lowerText.indexOf(lowerQuery)
+            while (index >= 0) {
+                matchPositions.add(index)
+                try {
+                    textArea.highlighter.addHighlight(index, index + query.length, highlighter)
+                } catch (_: Exception) {
+                    // Ignore highlighting errors
+                }
+                index = lowerText.indexOf(lowerQuery, index + 1)
             }
-            index = lowerText.indexOf(lowerQuery, index + 1)
         }
 
         if (matchPositions.isNotEmpty()) {
             currentMatchIndex = 0
-            // Scroll to first match but don't steal focus from search field
             scrollToMatch(0, stealFocus = false)
         }
     }
@@ -273,88 +437,27 @@ class FlowDetailsDialog(
 
     private fun scrollToMatch(index: Int, stealFocus: Boolean = false) {
         if (index < 0 || index >= matchPositions.size) return
-        val position = matchPositions[index]
-        textArea.caretPosition = position
-        if (stealFocus) {
-            textArea.requestFocusInWindow()
+
+        // Find which text area contains this match and scroll to it
+        for (textArea in searchableTextAreas) {
+            if (textArea.text.isNotEmpty()) {
+                try {
+                    textArea.caretPosition = matchPositions[index]
+                    if (stealFocus) {
+                        textArea.requestFocusInWindow()
+                    }
+                    break
+                } catch (_: Exception) {
+                    // Continue to next text area
+                }
+            }
         }
     }
 
     private fun clearHighlights() {
-        textArea.highlighter.removeAllHighlights()
+        searchableTextAreas.forEach { it.highlighter.removeAllHighlights() }
     }
 
-    private fun buildFlowDetails(): String {
-        val sb = StringBuilder()
-
-        sb.appendLine("═══════════════════════════════════════════════════════════")
-        sb.appendLine("FLOW INFORMATION")
-        sb.appendLine("═══════════════════════════════════════════════════════════")
-        sb.appendLine()
-        sb.appendLine("Flow ID: ${flow.flowId}")
-        sb.appendLine("Timestamp: ${flow.timestamp}")
-        sb.appendLine("Duration: ${String.format("%.2f", flow.duration * 1000)} ms")
-        sb.appendLine("Paused: ${flow.paused}")
-        sb.appendLine()
-
-        sb.appendLine("═══════════════════════════════════════════════════════════")
-        sb.appendLine("REQUEST")
-        sb.appendLine("═══════════════════════════════════════════════════════════")
-        sb.appendLine()
-        sb.appendLine("${flow.request.method} ${flow.request.path}")
-        sb.appendLine("Host: ${flow.request.host}")
-        sb.appendLine("URL: ${flow.request.url}")
-        sb.appendLine()
-
-        if (flow.request.headers.isNotEmpty()) {
-            sb.appendLine("Headers:")
-            flow.request.headers.forEach { (key, value) ->
-                sb.appendLine("  $key: $value")
-            }
-            sb.appendLine()
-        }
-
-        if (flow.request.content.isNotEmpty()) {
-            sb.appendLine("Body:")
-            sb.appendLine(formatJsonIfPossible(flow.request.content))
-            sb.appendLine()
-        }
-
-        if (flow.response != null) {
-            sb.appendLine("═══════════════════════════════════════════════════════════")
-            sb.appendLine("RESPONSE")
-            sb.appendLine("═══════════════════════════════════════════════════════════")
-            sb.appendLine()
-            sb.appendLine("Status: ${flow.response.statusCode} ${flow.response.reason}")
-            sb.appendLine("Content-Type: ${flow.response.getContentType()}")
-            sb.appendLine()
-
-            if (flow.response.headers.isNotEmpty()) {
-                sb.appendLine("Headers:")
-                flow.response.headers.forEach { (key, value) ->
-                    sb.appendLine("  $key: $value")
-                }
-                sb.appendLine()
-            }
-
-            if (flow.response.content.isNotEmpty()) {
-                sb.appendLine("Body:")
-                sb.appendLine(formatJsonIfPossible(flow.response.content))
-                sb.appendLine()
-            }
-        } else {
-            sb.appendLine()
-            sb.appendLine("═══════════════════════════════════════════════════════════")
-            sb.appendLine("RESPONSE: Pending...")
-            sb.appendLine("═══════════════════════════════════════════════════════════")
-        }
-
-        return sb.toString()
-    }
-
-    /**
-     * Format JSON with pretty printing if valid, otherwise return as-is.
-     */
     private fun formatJsonIfPossible(content: String): String {
         if (content.isBlank()) return content
 
@@ -365,6 +468,14 @@ class FlowDetailsDialog(
         } catch (_: Exception) {
             // Not valid JSON, return original
             content
+        }
+    }
+
+    private fun extractPath(url: String): String {
+        return try {
+            java.net.URI.create(url).path
+        } catch (_: Exception) {
+            url
         }
     }
 

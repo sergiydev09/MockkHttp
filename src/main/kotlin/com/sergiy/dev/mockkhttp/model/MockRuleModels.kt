@@ -103,7 +103,8 @@ data class StructuredUrl(
                     if (parts.isNotEmpty()) {
                         val key = parts[0]
                         val value = if (parts.size > 1) parts[1] else ""
-                        params.add(QueryParam(key, value, required = false, matchType = MatchType.WILDCARD))
+                        // Mark as required=true and EXACT match when creating from captured flow
+                        params.add(QueryParam(key, value, required = true, matchType = MatchType.EXACT))
                     }
                 }
 

@@ -1,10 +1,10 @@
 package com.sergiy.dev.mockkhttp.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
-import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
@@ -19,7 +19,6 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.io.File
 import javax.swing.*
-import javax.swing.filechooser.FileFilter
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
@@ -910,59 +909,75 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
             return
         }
 
-        // Show file chooser
-        val fileChooser = JFileChooser()
-        fileChooser.dialogTitle = "Export Collections to JSON"
-        fileChooser.selectedFile = File("mockk-collections-${System.currentTimeMillis()}.json")
-        fileChooser.fileFilter = object : FileFilter() {
-            override fun accept(f: File?): Boolean {
-                return f?.isDirectory == true || f?.name?.endsWith(".json") == true
-            }
-            override fun getDescription(): String = "JSON files (*.json)"
-        }
+        // Use IntelliJ Platform FileSaverDialog for proper theme support
+        val descriptor = com.intellij.openapi.fileChooser.FileSaverDescriptor(
+            "Export Collections to JSON",
+            "Select destination file for exported collections",
+            "json"
+        )
 
-        if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            try {
-                val file = fileChooser.selectedFile
-                val json = mockkRulesStore.exportCollections(collectionsToExport)
-                file.writeText(json)
+        val defaultName = "mockk-collections-${System.currentTimeMillis()}.json"
+        val initialDir = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
+            .findFileByPath(System.getProperty("user.home") ?: "")
 
-                logger.info("✅ Exported ${collectionsToExport.size} collection(s) to ${file.absolutePath}")
-                Messages.showInfoMessage(
-                    this,
-                    "Successfully exported ${collectionsToExport.size} collection(s)",
-                    "Export Successful"
-                )
-            } catch (e: Exception) {
-                logger.error("Failed to export collections", e)
-                Messages.showErrorDialog(this, "Failed to export: ${e.message}", "Export Failed")
+        com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+            .createSaveFileDialog(descriptor, project)
+            .save(initialDir, defaultName)?.let { fileWrapper ->
+                try {
+                    val file = fileWrapper.file
+                    val json = mockkRulesStore.exportCollections(collectionsToExport)
+                    file.writeText(json)
+
+                    logger.info("✅ Exported ${collectionsToExport.size} collection(s) to ${file.absolutePath}")
+                    Messages.showInfoMessage(
+                        this,
+                        "Successfully exported ${collectionsToExport.size} collection(s) to:\n${file.name}",
+                        "Export Successful"
+                    )
+
+                    // Refresh VFS
+                    com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)
+                } catch (e: Exception) {
+                    logger.error("Failed to export collections", e)
+                    Messages.showErrorDialog(this, "Failed to export: ${e.message}", "Export Failed")
+                }
             }
-        }
     }
 
     private fun importCollections() {
-        val fileChooser = JFileChooser()
-        fileChooser.dialogTitle = "Import Collections from JSON"
-        fileChooser.fileFilter = object : FileFilter() {
-            override fun accept(f: File?): Boolean {
-                return f?.isDirectory == true || f?.name?.endsWith(".json") == true
-            }
-            override fun getDescription(): String = "JSON files (*.json)"
+        // Use IntelliJ Platform FileChooser for proper theme support
+        val descriptor = com.intellij.openapi.fileChooser.FileChooserDescriptor(
+            true,   // chooseFiles
+            false,  // chooseFolders
+            false,  // chooseJars
+            false,  // chooseJarsAsFiles
+            false,  // chooseJarContents
+            false   // chooseMultiple
+        ).apply {
+            title = "Import Collections from JSON"
+            description = "Select JSON file containing exported collections"
+            withFileFilter { it.extension == "json" }
         }
 
-        if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+        val initialDir = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
+            .findFileByPath(System.getProperty("user.home") ?: "")
+
+        com.intellij.openapi.fileChooser.FileChooser.chooseFile(descriptor, project, initialDir) { virtualFile ->
             try {
-                val file = fileChooser.selectedFile
+                val file = File(virtualFile.path)
                 val json = file.readText()
 
                 val imported = mockkRulesStore.importCollections(json, renameOnConflict = true)
 
-                logger.info("✅ Imported ${imported.size} collection(s)")
+                logger.info("✅ Imported ${imported.size} collection(s) from ${file.name}")
                 Messages.showInfoMessage(
                     this,
-                    "Successfully imported ${imported.size} collection(s)",
+                    "Successfully imported ${imported.size} collection(s) from:\n${file.name}",
                     "Import Successful"
                 )
+
+                // Refresh tree to show imported collections
+                SwingUtilities.invokeLater { loadTreeData() }
             } catch (e: Exception) {
                 logger.error("Failed to import collections", e)
                 Messages.showErrorDialog(this, "Failed to import: ${e.message}", "Import Failed")
@@ -977,55 +992,91 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         val node = path.lastPathComponent as DefaultMutableTreeNode
         val nodeData = node.userObject as? TreeNode ?: return
 
-        val popup = JPopupMenu()
+        val actionGroup = DefaultActionGroup()
 
         when (nodeData) {
             is TreeNode.CollectionNode -> {
                 val collection = nodeData.collection
-                popup.add(JMenuItem("Edit Collection").apply {
-                    addActionListener { editCollection(collection) }
+
+                actionGroup.add(object : AnAction("Edit Collection", null, AllIcons.Actions.Edit) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        editCollection(collection)
+                    }
                 })
-                popup.add(JMenuItem("New Mock in this Collection").apply {
-                    addActionListener {
+
+                actionGroup.add(object : AnAction("New Mock in This Collection", null, AllIcons.General.Add) {
+                    override fun actionPerformed(e: AnActionEvent) {
                         val dialog = CreateMockDialog(project, targetCollectionId = collection.id)
                         dialog.showAndGet()
                     }
                 })
-                popup.addSeparator()
-                popup.add(JMenuItem(if (collection.enabled) "Disable Collection" else "Enable Collection").apply {
-                    addActionListener { toggleCollectionEnabled(collection) }
+
+                actionGroup.addSeparator()
+
+                actionGroup.add(object : AnAction(
+                    if (collection.enabled) "Disable Collection" else "Enable Collection",
+                    null,
+                    if (collection.enabled) AllIcons.Actions.Suspend else AllIcons.Actions.Execute
+                ) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        toggleCollectionEnabled(collection)
+                    }
                 })
-                popup.add(JMenuItem("Export Collection").apply {
-                    addActionListener {
+
+                actionGroup.add(object : AnAction("Export Collection", null, AllIcons.ToolbarDecorator.Export) {
+                    override fun actionPerformed(e: AnActionEvent) {
                         tree.selectionPath = path
                         exportSelected()
                     }
                 })
-                popup.addSeparator()
-                popup.add(JMenuItem("Delete Collection").apply {
-                    addActionListener { deleteSelected() }
+
+                actionGroup.addSeparator()
+
+                actionGroup.add(object : AnAction("Delete Collection", null, AllIcons.Actions.Cancel) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        deleteSelected()
+                    }
                 })
             }
             is TreeNode.RuleNode -> {
                 val rule = nodeData.rule
-                popup.add(JMenuItem("Edit Rule").apply {
-                    addActionListener { editRule(rule) }
+
+                actionGroup.add(object : AnAction("Edit Rule", null, AllIcons.Actions.Edit) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        editRule(rule)
+                    }
                 })
-                popup.add(JMenuItem("Duplicate to...").apply {
-                    addActionListener { duplicateSelected() }
+
+                actionGroup.add(object : AnAction("Duplicate To...", null, AllIcons.Actions.Copy) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        duplicateSelected()
+                    }
                 })
-                popup.addSeparator()
-                popup.add(JMenuItem(if (rule.enabled) "Disable Rule" else "Enable Rule").apply {
-                    addActionListener { toggleRuleEnabled(rule) }
+
+                actionGroup.addSeparator()
+
+                actionGroup.add(object : AnAction(
+                    if (rule.enabled) "Disable Rule" else "Enable Rule",
+                    null,
+                    if (rule.enabled) AllIcons.Actions.Suspend else AllIcons.Actions.Execute
+                ) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        toggleRuleEnabled(rule)
+                    }
                 })
-                popup.addSeparator()
-                popup.add(JMenuItem("Delete Rule").apply {
-                    addActionListener { deleteSelected() }
+
+                actionGroup.addSeparator()
+
+                actionGroup.add(object : AnAction("Delete Rule", null, AllIcons.Actions.Cancel) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        deleteSelected()
+                    }
                 })
             }
         }
 
-        popup.show(tree, e.x, e.y)
+        val popup = ActionManager.getInstance().createActionPopupMenu("MockkRulesPanel.ContextMenu", actionGroup)
+        popup.component.show(tree, e.x, e.y)
     }
 
     /**

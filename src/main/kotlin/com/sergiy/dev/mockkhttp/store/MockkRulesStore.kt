@@ -307,33 +307,36 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         val enabledCollections = collections.values.filter { it.enabled }
         logger.debug("🔍 Searching in ${enabledCollections.size} enabled collection(s)")
 
-        // Find matching rule without verbose logging
+        // Find matching rule with detailed logging
         for ((index, rule) in rules.withIndex()) {
             // Skip if rule not enabled
             if (!rule.enabled) {
+                logger.debug("  ⏭️  Rule $index: ${rule.name} - DISABLED")
                 continue
             }
 
             // Skip if rule's collection is disabled
             val ruleCollection = collections[rule.collectionId]
             if (ruleCollection == null || !ruleCollection.enabled) {
+                logger.debug("  ⏭️  Rule $index: ${rule.name} - Collection disabled")
                 continue
             }
 
             // Skip if method doesn't match
             if (!rule.method.equals(method, ignoreCase = true)) {
+                logger.debug("  ⏭️  Rule $index: ${rule.name} - Method mismatch (${rule.method} != $method)")
                 continue
             }
 
-            // Evaluate match with minimal logging
+            logger.debug("  🔍 Checking Rule $index: ${rule.name}")
+            logger.debug("     Rule: ${rule.method} ${rule.host}${rule.path}")
+            logger.debug("     Rule Params: ${rule.queryParams.map { "${it.key}=${it.value} (required=${it.required}, type=${it.matchType})" }}")
+
+            // Evaluate match with detailed logging
             val matches = matchesStructuredQuiet(rule, host, path, queryParams)
 
             if (matches) {
-                // Only log the winning rule
-                logger.debug("  ✅ Rule $index: ${rule.name} (Collection: ${ruleCollection.name})")
-                logger.debug("     Method: ${rule.method}, Host: ${rule.host}, Path: ${rule.path}")
-                logger.debug("     Query Params: ${rule.queryParams.map { "${it.key}=${it.value}" }}")
-                logger.debug("✅ MATCHED!")
+                logger.debug("  ✅ MATCHED Rule $index: ${rule.name}")
                 return rule
             }
         }
@@ -355,11 +358,13 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
     private fun matchesStructuredQuiet(rule: MockkRule, host: String, path: String, queryParams: Map<String, String>): Boolean {
         // 1. Match host (case-insensitive)
         if (!rule.host.equals(host, ignoreCase = true)) {
+            logger.debug("   ❌ Host mismatch: rule='${rule.host}' vs actual='$host'")
             return false
         }
 
         // 2. Match path (exact match)
         if (rule.path != path) {
+            logger.debug("   ❌ Path mismatch: rule='${rule.path}' vs actual='$path'")
             return false
         }
 
@@ -368,6 +373,7 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
             if (ruleParam.required) {
                 val actualValue = queryParams[ruleParam.key]
                 if (actualValue == null) {
+                    logger.debug("   ❌ Required param '${ruleParam.key}' not found in request")
                     return false
                 }
 
@@ -375,25 +381,32 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
                 when (ruleParam.matchType) {
                     MatchType.EXACT -> {
                         if (ruleParam.value != actualValue) {
+                            logger.debug("   ❌ Param '${ruleParam.key}' value mismatch: rule='${ruleParam.value}' vs actual='$actualValue'")
                             return false
                         }
                     }
                     MatchType.WILDCARD -> {
                         // Wildcard = accept any value, just check presence
+                        logger.debug("   ✅ Param '${ruleParam.key}' matched (wildcard)")
                     }
                     MatchType.REGEX -> {
                         try {
                             if (!Regex(ruleParam.value).matches(actualValue)) {
+                                logger.debug("   ❌ Param '${ruleParam.key}' regex mismatch: pattern='${ruleParam.value}' vs actual='$actualValue'")
                                 return false
                             }
                         } catch (_: Exception) {
+                            logger.debug("   ❌ Param '${ruleParam.key}' regex error: pattern='${ruleParam.value}'")
                             return false
                         }
                     }
                 }
+            } else {
+                logger.debug("   ⏭️  Param '${ruleParam.key}' skipped (not required)")
             }
         }
 
+        logger.debug("   ✅ All checks passed!")
         return true
     }
 

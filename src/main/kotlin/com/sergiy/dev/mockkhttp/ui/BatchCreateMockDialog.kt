@@ -211,8 +211,13 @@ class BatchCreateMockDialog(
         // from the selected flows themselves (e.g., if user selected same endpoint 3 times)
         val processedEndpoints = mutableSetOf<Triple<String, String, String>>() // (method, host, path)
 
+        // Track used names in this batch to avoid duplicates
+        val usedNames = mutableSetOf<String>()
+
         // Get existing rules from collection (only matters for existing collections)
         val existingRules = mockkRulesStore.getRulesInCollection(collection.id)
+        // Add existing rule names to the used names set
+        existingRules.forEach { usedNames.add(it.name) }
 
         for (flow in flows) {
             try {
@@ -248,10 +253,10 @@ class BatchCreateMockDialog(
                 }
                 val baseName = "${flow.request.method}_${pathSegment}"
 
-                // Make name unique if it already exists in the collection
+                // Make name unique using the usedNames set (includes both existing and newly created names)
                 var ruleName = baseName
                 var counter = 1
-                while (existingRules.any { it.name == ruleName }) {
+                while (usedNames.contains(ruleName)) {
                     ruleName = "${baseName}_${counter}"
                     counter++
                 }
@@ -268,8 +273,9 @@ class BatchCreateMockDialog(
                     collectionId = collection.id
                 )
 
-                // Mark this endpoint as processed
+                // Mark this endpoint and name as processed
                 processedEndpoints.add(endpointKey)
+                usedNames.add(ruleName)
                 successCount++
             } catch (e: Exception) {
                 logger.error("Failed to create mock rule for ${flow.request.url}", e)

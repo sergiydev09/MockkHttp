@@ -1,6 +1,7 @@
 package com.sergiy.dev.mockkhttp.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
@@ -742,7 +743,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
 
             val selectedFlows = flowList.selectedValuesList
-            val popup = JPopupMenu()
+            val actionGroup = DefaultActionGroup()
 
             if (selectedFlows.size == 1) {
                 // Single selection - show standard options
@@ -750,39 +751,41 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                 // "Create Mock Rule from Response" menu item
                 if (selectedFlow.response != null) {
-                    val createMockItem = JMenuItem("Create Mock Rule from Response", AllIcons.Actions.MenuSaveall)
-                    createMockItem.addActionListener {
-                        createMockFromFlow(selectedFlow)
-                    }
-                    popup.add(createMockItem)
+                    actionGroup.add(object : AnAction("Create Mock Rule from Response", null, AllIcons.Actions.MenuSaveall) {
+                        override fun actionPerformed(e: AnActionEvent) {
+                            createMockFromFlow(selectedFlow)
+                        }
+                    })
                 }
 
                 // "View Details" menu item
-                val detailsItem = JMenuItem("View Details", AllIcons.Actions.Preview)
-                detailsItem.addActionListener {
-                    showFlowDetails(selectedFlow)
-                }
-                popup.add(detailsItem)
+                actionGroup.add(object : AnAction("View Details", null, AllIcons.Actions.Preview) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        showFlowDetails(selectedFlow)
+                    }
+                })
 
             } else if (selectedFlows.size > 1) {
                 // Multiple selection - show batch create option
                 val flowsWithResponse = selectedFlows.filter { it.response != null }
 
                 if (flowsWithResponse.isNotEmpty()) {
-                    val batchCreateItem = JMenuItem(
+                    actionGroup.add(object : AnAction(
                         "Create ${flowsWithResponse.size} Mock Rules from Selection",
+                        null,
                         AllIcons.Actions.MenuSaveall
-                    )
-                    batchCreateItem.addActionListener {
-                        createMocksFromFlows(flowsWithResponse)
-                    }
-                    popup.add(batchCreateItem)
+                    ) {
+                        override fun actionPerformed(e: AnActionEvent) {
+                            createMocksFromFlows(flowsWithResponse)
+                        }
+                    })
                 }
             }
 
             // Show popup if it has items
-            if (popup.componentCount > 0) {
-                popup.show(e.component, e.x, e.y)
+            if (actionGroup.childrenCount > 0) {
+                val popup = ActionManager.getInstance().createActionPopupMenu("InspectorPanel.ContextMenu", actionGroup)
+                popup.component.show(e.component, e.x, e.y)
             }
         }
     }
