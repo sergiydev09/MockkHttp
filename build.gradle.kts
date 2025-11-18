@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.4.29"
+version = "1.4.30"
 
 repositories {
     mavenCentral()
@@ -21,7 +21,7 @@ repositories {
 // Read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html
 dependencies {
     intellijPlatform {
-        create("IC", "2025.1")
+        create("IC", "2024.3")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
     
@@ -50,7 +50,15 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.4.29 - BoxLayout LEFT_ALIGNMENT Fix</h3>
+            <h3>Version 1.4.30 - IntelliJ Platform 2024.3 Compatibility</h3>
+            <ul>
+                <li><strong>🔧 CRITICAL FIX:</strong> Fixed FileSaverDescriptor API compatibility with IntelliJ IDEA 2024.3</li>
+                <li><strong>✨ Platform Update:</strong> Now built against IntelliJ Platform 2024.3 for better compatibility</li>
+                <li><strong>📦 Compatibility:</strong> Supports IntelliJ IDEA 2024.1+ (sinceBuild: 241)</li>
+                <li><strong>🎯 Tested:</strong> Verified on IntelliJ IDEA 2024.3.7 (build IU-243.28141.18)</li>
+            </ul>
+
+            <h3>Previous: Version 1.4.29 - BoxLayout LEFT_ALIGNMENT Fix</h3>
             <ul>
                 <li><strong>🎯 CRITICAL FIX:</strong> Set alignmentX = LEFT_ALIGNMENT on ALL components in BoxLayout!</li>
                 <li><strong>✨ True Left Alignment:</strong> Fixed BoxLayout default CENTER_ALIGNMENT causing indentation</li>
@@ -151,7 +159,7 @@ intellijPlatform {
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.19"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.30"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! No repository configuration needed</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
@@ -173,7 +181,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.19"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.30"</code></li>
             </ul>
         """.trimIndent()
     }

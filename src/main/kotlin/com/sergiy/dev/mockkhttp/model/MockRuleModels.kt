@@ -29,14 +29,14 @@ data class MockkCollection(
     var description: String = "",  // Optional description
     var enabled: Boolean = true,
     var createdAt: Long = System.currentTimeMillis(),
-    var version: String = "1.3.9"  // Plugin version when created
+    var version: String = "1.4.30"  // Plugin version when created
 )
 
 /**
  * Format for exporting/importing collections
  */
 data class MockkCollectionExport(
-    val pluginVersion: String = "1.3.9",
+    val pluginVersion: String = "1.4.30",
     val exportDate: Long = System.currentTimeMillis(),
     val collections: List<MockkCollectionData> = emptyList()
 )

@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "io.github.sergiydev09.mockkhttp"
-version = "1.4.29"
+version = "1.4.30"
 
 repositories {
     google()
