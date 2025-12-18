@@ -71,5 +71,15 @@
                 anchor="bottom"
                 icon="/META-INF/pluginIcon.svg"
                 factoryClass="com.sergiy.dev.mockkhttp.ui.MockkHttpToolWindowFactory"/>
+
+        <!-- Startup Activity - runs when project is opened -->
+        <postStartupActivity
+                implementation="com.sergiy.dev.mockkhttp.startup.MockkHttpStartupActivity"/>
+
+        <!-- Notification Group for user notifications -->
+        <notificationGroup
+                id="MockkHttp Notifications"
+                displayType="BALLOON"
+                toolWindowId="MockkHttp"/>
     </extensions>
 </idea-plugin>

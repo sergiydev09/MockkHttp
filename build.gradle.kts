@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.4.30"
+version = "1.4.31"
 
 repositories {
     mavenCentral()
@@ -50,12 +50,21 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.4.30 - IntelliJ Platform 2024.3 Compatibility</h3>
+            <h3>Version 1.4.31 - Settings Tab & Improved ADB Detection</h3>
+            <ul>
+                <li><strong>⚙️ NEW: Settings Tab:</strong> Configure ADB path, Android SDK path, and plugin options</li>
+                <li><strong>🔍 Improved ADB Detection:</strong> Enhanced auto-detection for macOS (Intel & Apple Silicon), Windows, and Linux</li>
+                <li><strong>🍎 macOS Fixes:</strong> Reads ANDROID_HOME from shell profile, Android Studio preferences, Homebrew, and Spotlight</li>
+                <li><strong>🚀 Startup Notification:</strong> Shows ADB status when project opens with "Open Settings" button if not found</li>
+                <li><strong>💾 Persistent Settings:</strong> Manually configured paths are saved and used first before auto-detection</li>
+                <li><strong>🔧 Path Validation:</strong> Real-time validation of configured paths with helpful error messages</li>
+            </ul>
+
+            <h3>Previous: Version 1.4.30 - IntelliJ Platform 2024.3 Compatibility</h3>
             <ul>
                 <li><strong>🔧 CRITICAL FIX:</strong> Fixed FileSaverDescriptor API compatibility with IntelliJ IDEA 2024.3</li>
                 <li><strong>✨ Platform Update:</strong> Now built against IntelliJ Platform 2024.3 for better compatibility</li>
                 <li><strong>📦 Compatibility:</strong> Supports IntelliJ IDEA 2024.1+ (sinceBuild: 241)</li>
-                <li><strong>🎯 Tested:</strong> Verified on IntelliJ IDEA 2024.3.7 (build IU-243.28141.18)</li>
             </ul>
 
             <h3>Previous: Version 1.4.29 - BoxLayout LEFT_ALIGNMENT Fix</h3>
@@ -159,7 +168,7 @@ intellijPlatform {
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.30"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.31"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! No repository configuration needed</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
@@ -181,7 +190,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.30"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.31"</code></li>
             </ul>
         """.trimIndent()
     }

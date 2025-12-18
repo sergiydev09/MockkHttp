@@ -6,6 +6,7 @@ import com.android.ddmlib.IDevice
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
+import com.sergiy.dev.mockkhttp.store.SettingsStore
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -14,7 +15,7 @@ import java.util.concurrent.TimeUnit
  * Handles ADB bridge initialization and emulator discovery.
  */
 @Service(Service.Level.PROJECT)
-class EmulatorManager(project: Project) {
+class EmulatorManager(private val project: Project) {
 
     private val logger = MockkHttpLogger.getInstance(project)
     private var adbBridge: AndroidDebugBridge? = null
@@ -29,24 +30,24 @@ class EmulatorManager(project: Project) {
 
         private const val ADB_INIT_TIMEOUT_MS = 10000L
     }
-    
+
     /**
      * Initialize ADB bridge.
      * Must be called before any ADB operations.
      */
     fun initialize(): Boolean {
         logger.info("🔧 Initializing ADB bridge...")
-        
+
         if (isInitialized && adbBridge != null) {
             logger.debug("ADB bridge already initialized")
             return true
         }
-        
+
         try {
-            // Find ADB executable
-            val adbPath = findAdbPath()
+            // Find ADB executable - first check settings, then auto-detect
+            val adbPath = getConfiguredOrDetectedAdbPath()
             if (adbPath == null) {
-                logger.error("ADB executable not found. Please install Android SDK Platform Tools.")
+                logger.error("ADB executable not found. Please configure it in Settings tab or install Android SDK Platform Tools.")
                 return false
             }
 
@@ -138,54 +139,374 @@ class EmulatorManager(project: Project) {
             return false
         }
     }
-    
+
+    /**
+     * Get ADB path from settings if configured, otherwise auto-detect.
+     * This is the preferred method to get the ADB path.
+     */
+    fun getConfiguredOrDetectedAdbPath(): String? {
+        // First, check if user has configured a path in settings
+        try {
+            val settingsStore = SettingsStore.getInstance(project)
+            val configuredPath = settingsStore.getAdbPath()
+            if (configuredPath != null) {
+                val file = File(configuredPath)
+                if (file.exists() && file.canExecute()) {
+                    logger.info("✅ Using configured ADB path: $configuredPath")
+                    return configuredPath
+                } else {
+                    logger.warn("⚠️ Configured ADB path is invalid: $configuredPath (falling back to auto-detect)")
+                }
+            }
+        } catch (e: Exception) {
+            logger.debug("Could not read settings (may be initializing): ${e.message}")
+        }
+
+        // Fall back to auto-detection
+        return findAdbPath()
+    }
+
     /**
      * Find ADB executable path.
-     * Checks common locations for Android SDK.
+     * Checks common locations for Android SDK across all platforms.
      * Made public so other components can use it.
      */
     fun findAdbPath(): String? {
-        logger.debug("Searching for ADB executable...")
-        
-        // Try ANDROID_HOME environment variable
-        val androidHome = System.getenv("ANDROID_HOME")
-        if (androidHome != null) {
-            val adbPath = File(androidHome, "platform-tools/adb")
-            if (adbPath.exists()) {
-                logger.debug("ADB found via ANDROID_HOME: ${adbPath.absolutePath}")
-                return adbPath.absolutePath
+        logger.info("🔍 Searching for ADB executable...")
+        val triedPaths = mutableListOf<String>()
+        val osName = System.getProperty("os.name").lowercase()
+        val isWindows = osName.contains("windows")
+        val isMacOS = osName.contains("mac")
+        val adbExecutable = if (isWindows) "adb.exe" else "adb"
+        val userHome = System.getProperty("user.home")
+
+        // Helper function to check ADB path
+        fun checkAdbPath(path: File, source: String): String? {
+            val fullPath = path.absolutePath
+            triedPaths.add("$source: $fullPath")
+            if (path.exists() && path.canExecute()) {
+                logger.info("✅ ADB found via $source: $fullPath")
+                return fullPath
+            }
+            return null
+        }
+
+        // 1. Try ANDROID_HOME environment variable
+        System.getenv("ANDROID_HOME")?.let { androidHome ->
+            checkAdbPath(File(androidHome, "platform-tools/$adbExecutable"), "ANDROID_HOME")?.let { return it }
+        }
+
+        // 2. Try ANDROID_SDK_ROOT environment variable
+        System.getenv("ANDROID_SDK_ROOT")?.let { androidSdkRoot ->
+            checkAdbPath(File(androidSdkRoot, "platform-tools/$adbExecutable"), "ANDROID_SDK_ROOT")?.let { return it }
+        }
+
+        // 3. Try ANDROID_SDK environment variable (some setups use this)
+        System.getenv("ANDROID_SDK")?.let { androidSdk ->
+            checkAdbPath(File(androidSdk, "platform-tools/$adbExecutable"), "ANDROID_SDK")?.let { return it }
+        }
+
+        // 4. macOS: Try to get ANDROID_HOME from shell profile (IntelliJ doesn't inherit shell env vars when opened from Dock)
+        if (isMacOS) {
+            try {
+                // Run a login shell to get the proper environment variables
+                val shellEnvProcess = ProcessBuilder("/bin/bash", "-l", "-c", "echo \$ANDROID_HOME")
+                    .redirectErrorStream(true)
+                    .start()
+                val shellAndroidHome = shellEnvProcess.inputStream.bufferedReader().readText().trim()
+                shellEnvProcess.waitFor(5, TimeUnit.SECONDS)
+                if (shellAndroidHome.isNotBlank() && shellAndroidHome != "\$ANDROID_HOME") {
+                    checkAdbPath(File(shellAndroidHome, "platform-tools/$adbExecutable"), "Shell ANDROID_HOME (bash)")?.let { return it }
+                }
+            } catch (e: Exception) {
+                logger.debug("Failed to get ANDROID_HOME from bash: ${e.message}")
+            }
+
+            // Also try zsh (default shell on modern macOS)
+            try {
+                val zshEnvProcess = ProcessBuilder("/bin/zsh", "-l", "-c", "echo \$ANDROID_HOME")
+                    .redirectErrorStream(true)
+                    .start()
+                val zshAndroidHome = zshEnvProcess.inputStream.bufferedReader().readText().trim()
+                zshEnvProcess.waitFor(5, TimeUnit.SECONDS)
+                if (zshAndroidHome.isNotBlank() && zshAndroidHome != "\$ANDROID_HOME") {
+                    checkAdbPath(File(zshAndroidHome, "platform-tools/$adbExecutable"), "Shell ANDROID_HOME (zsh)")?.let { return it }
+                }
+            } catch (e: Exception) {
+                logger.debug("Failed to get ANDROID_HOME from zsh: ${e.message}")
             }
         }
-        
-        // Try ANDROID_SDK_ROOT environment variable
-        val androidSdkRoot = System.getenv("ANDROID_SDK_ROOT")
-        if (androidSdkRoot != null) {
-            val adbPath = File(androidSdkRoot, "platform-tools/adb")
-            if (adbPath.exists()) {
-                logger.debug("ADB found via ANDROID_SDK_ROOT: ${adbPath.absolutePath}")
-                return adbPath.absolutePath
+
+        // 5. macOS: Try to read SDK path from Android Studio preferences
+        if (isMacOS) {
+            findSdkFromAndroidStudioPrefs(userHome)?.let { sdkPath ->
+                checkAdbPath(File(sdkPath, "platform-tools/$adbExecutable"), "Android Studio preferences")?.let { return it }
             }
         }
-        
-        // Try common macOS location
-        val macOsPath = File(System.getProperty("user.home"), 
-                              "Library/Android/sdk/platform-tools/adb")
-        if (macOsPath.exists()) {
-            logger.debug("ADB found at macOS default location: ${macOsPath.absolutePath}")
-            return macOsPath.absolutePath
+
+        // 6. Platform-specific default locations
+        val defaultPaths = if (isWindows) {
+            listOf(
+                File(userHome, "AppData/Local/Android/Sdk/platform-tools/$adbExecutable"),
+                File("C:/Android/sdk/platform-tools/$adbExecutable"),
+                File("C:/Users/${System.getProperty("user.name")}/AppData/Local/Android/Sdk/platform-tools/$adbExecutable"),
+                File(System.getenv("LOCALAPPDATA") ?: "", "Android/Sdk/platform-tools/$adbExecutable"),
+                File(System.getenv("ProgramFiles") ?: "", "Android/Android Studio/sdk/platform-tools/$adbExecutable"),
+                File(System.getenv("ProgramFiles(x86)") ?: "", "Android/Android Studio/sdk/platform-tools/$adbExecutable")
+            )
+        } else if (!isMacOS) {
+            // Linux
+            listOf(
+                File(userHome, "Android/Sdk/platform-tools/$adbExecutable"),
+                File(userHome, "android-sdk/platform-tools/$adbExecutable"),
+                File("/opt/android-sdk/platform-tools/$adbExecutable"),
+                File("/usr/local/android-sdk/platform-tools/$adbExecutable"),
+                File("/snap/android-studio/current/android-studio/sdk/platform-tools/$adbExecutable"),
+                File(userHome, ".var/app/com.google.AndroidStudio/data/Android/Sdk/platform-tools/$adbExecutable")
+            )
+        } else {
+            // macOS - most common location first
+            listOf(
+                // Standard macOS location (most common)
+                File(userHome, "Library/Android/sdk/platform-tools/$adbExecutable"),
+                // Android Studio bundled SDK
+                File("/Applications/Android Studio.app/Contents/sdk/platform-tools/$adbExecutable"),
+                // Alternative locations
+                File("/opt/android-sdk/platform-tools/$adbExecutable"),
+                File("/usr/local/share/android-sdk/platform-tools/$adbExecutable")
+            )
         }
-        
-        // Try PATH
+
+        for (path in defaultPaths) {
+            checkAdbPath(path, "Default location")?.let { return it }
+        }
+
+        // 7. macOS: Check Homebrew locations (Intel and Apple Silicon)
+        if (isMacOS) {
+            findAdbInHomebrew(adbExecutable)?.let { path ->
+                triedPaths.add("Homebrew: $path")
+                logger.info("✅ ADB found via Homebrew: $path")
+                return path
+            }
+        }
+
+        // 8. Try PATH environment variable
         val pathEnv = System.getenv("PATH") ?: ""
-        for (dir in pathEnv.split(":")) {
-            val adbPath = File(dir, "adb")
-            if (adbPath.exists() && adbPath.canExecute()) {
-                logger.debug("ADB found in PATH: ${adbPath.absolutePath}")
-                return adbPath.absolutePath
+        val pathSeparator = if (isWindows) ";" else ":"
+        for (dir in pathEnv.split(pathSeparator)) {
+            if (dir.isNotBlank()) {
+                val adbPath = File(dir, adbExecutable)
+                checkAdbPath(adbPath, "PATH")?.let { return it }
             }
         }
-        
-        logger.warn("ADB not found in any common location")
+
+        // 9. macOS: Try 'which adb' with login shell (gets full PATH from shell profile)
+        if (isMacOS) {
+            findAdbWithLoginShell()?.let { path ->
+                triedPaths.add("Login shell which: $path")
+                logger.info("✅ ADB found via login shell: $path")
+                return path
+            }
+        }
+
+        // 10. macOS: Use Spotlight (mdfind) as last resort
+        if (isMacOS) {
+            findAdbWithSpotlight()?.let { path ->
+                triedPaths.add("Spotlight (mdfind): $path")
+                logger.info("✅ ADB found via Spotlight: $path")
+                return path
+            }
+        }
+
+        // 11. Try 'which adb' or 'where adb' command (non-login shell, may not work on macOS)
+        try {
+            val command = if (isWindows) arrayOf("cmd", "/c", "where", "adb") else arrayOf("which", "adb")
+            val process = Runtime.getRuntime().exec(command)
+            val result = process.inputStream.bufferedReader().readText().trim()
+            process.waitFor(5, TimeUnit.SECONDS)
+            if (process.exitValue() == 0 && result.isNotBlank()) {
+                val adbPath = File(result.lines().first())
+                if (adbPath.exists() && adbPath.canExecute()) {
+                    logger.info("✅ ADB found via ${if (isWindows) "where" else "which"} command: ${adbPath.absolutePath}")
+                    return adbPath.absolutePath
+                }
+            }
+        } catch (e: Exception) {
+            logger.debug("Failed to run which/where command: ${e.message}")
+        }
+
+        // Log all tried paths for debugging
+        logger.error("❌ ADB not found. Tried the following locations:")
+        triedPaths.forEach { logger.error("  - $it") }
+        logger.error("💡 Solutions:")
+        logger.error("  1. Install Android SDK Platform Tools: brew install --cask android-platform-tools")
+        logger.error("  2. Set ANDROID_HOME in your shell profile (~/.zshrc or ~/.bash_profile):")
+        logger.error("     export ANDROID_HOME=\$HOME/Library/Android/sdk")
+        logger.error("     export PATH=\$PATH:\$ANDROID_HOME/platform-tools")
+        logger.error("  3. Restart Android Studio after setting environment variables")
+        logger.error("  4. Or launch Android Studio from terminal: open -a 'Android Studio'")
+
+        return null
+    }
+
+    /**
+     * Find SDK path from Android Studio preferences (macOS specific).
+     */
+    private fun findSdkFromAndroidStudioPrefs(userHome: String): String? {
+        // Check various Android Studio config locations
+        val configLocations = listOf(
+            // New Android Studio (2020.3+)
+            File(userHome, "Library/Application Support/Google/AndroidStudio"),
+            // Older Android Studio
+            File(userHome, "Library/Preferences/AndroidStudio"),
+            // Preview versions
+            File(userHome, "Library/Application Support/Google/AndroidStudioPreview")
+        )
+
+        for (baseDir in configLocations) {
+            if (!baseDir.exists()) continue
+
+            // Find the latest version directory
+            val versionDirs = baseDir.listFiles { file -> file.isDirectory }
+                ?.sortedByDescending { it.name }
+                ?: continue
+
+            for (versionDir in versionDirs) {
+                // Try to find sdk path in jdk.table.xml
+                val jdkTableFile = File(versionDir, "options/jdk.table.xml")
+                if (jdkTableFile.exists()) {
+                    try {
+                        val content = jdkTableFile.readText()
+                        // Look for Android SDK path in the XML
+                        val sdkPathRegex = """<homePath[^>]*value="([^"]*Android[/\\]sdk[^"]*)"[^>]*/>""".toRegex(RegexOption.IGNORE_CASE)
+                        sdkPathRegex.find(content)?.groupValues?.get(1)?.let { sdkPath ->
+                            val expandedPath = sdkPath.replace("\$USER_HOME\$", userHome)
+                            if (File(expandedPath).exists()) {
+                                logger.debug("Found SDK path in Android Studio preferences: $expandedPath")
+                                return expandedPath
+                            }
+                        }
+                    } catch (e: Exception) {
+                        logger.debug("Failed to read Android Studio preferences: ${e.message}")
+                    }
+                }
+
+                // Also check for sdk.dir in idea.properties
+                val ideaPropsFile = File(versionDir, "idea.properties")
+                if (ideaPropsFile.exists()) {
+                    try {
+                        ideaPropsFile.readLines().forEach { line ->
+                            if (line.startsWith("android.sdk.path=")) {
+                                val sdkPath = line.substringAfter("=").trim()
+                                if (File(sdkPath).exists()) {
+                                    logger.debug("Found SDK path in idea.properties: $sdkPath")
+                                    return sdkPath
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        logger.debug("Failed to read idea.properties: ${e.message}")
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Find ADB in Homebrew installation (handles both Intel and Apple Silicon).
+     */
+    private fun findAdbInHomebrew(adbExecutable: String): String? {
+        // Homebrew paths for Intel and Apple Silicon Macs
+        val homebrewPrefixes = listOf(
+            "/opt/homebrew",        // Apple Silicon (M1/M2/M3)
+            "/usr/local"            // Intel Macs
+        )
+
+        for (prefix in homebrewPrefixes) {
+            // Check android-platform-tools cask (most common)
+            val caskDir = File("$prefix/Caskroom/android-platform-tools")
+            if (caskDir.exists()) {
+                caskDir.listFiles { file -> file.isDirectory }
+                    ?.sortedByDescending { it.name }
+                    ?.forEach { versionDir ->
+                        val adbPath = File(versionDir, "platform-tools/$adbExecutable")
+                        if (adbPath.exists() && adbPath.canExecute()) {
+                            return adbPath.absolutePath
+                        }
+                    }
+            }
+
+            // Check android-sdk cask
+            val sdkCaskDir = File("$prefix/Caskroom/android-sdk")
+            if (sdkCaskDir.exists()) {
+                sdkCaskDir.listFiles { file -> file.isDirectory }
+                    ?.sortedByDescending { it.name }
+                    ?.forEach { versionDir ->
+                        val adbPath = File(versionDir, "platform-tools/$adbExecutable")
+                        if (adbPath.exists() && adbPath.canExecute()) {
+                            return adbPath.absolutePath
+                        }
+                    }
+            }
+
+            // Check symlinked adb in Homebrew bin
+            val binAdb = File("$prefix/bin/$adbExecutable")
+            if (binAdb.exists() && binAdb.canExecute()) {
+                return binAdb.absolutePath
+            }
+        }
+        return null
+    }
+
+    /**
+     * Find ADB using login shell (gets full PATH from user's shell profile).
+     */
+    private fun findAdbWithLoginShell(): String? {
+        val shells = listOf("/bin/zsh", "/bin/bash")
+        for (shell in shells) {
+            try {
+                val process = ProcessBuilder(shell, "-l", "-c", "which adb")
+                    .redirectErrorStream(true)
+                    .start()
+                val result = process.inputStream.bufferedReader().readText().trim()
+                process.waitFor(5, TimeUnit.SECONDS)
+                if (process.exitValue() == 0 && result.isNotBlank()) {
+                    val adbPath = File(result)
+                    if (adbPath.exists() && adbPath.canExecute()) {
+                        return adbPath.absolutePath
+                    }
+                }
+            } catch (e: Exception) {
+                logger.debug("Failed to find adb with $shell: ${e.message}")
+            }
+        }
+        return null
+    }
+
+    /**
+     * Find ADB using Spotlight search (mdfind) - macOS only.
+     */
+    private fun findAdbWithSpotlight(): String? {
+        try {
+            val process = ProcessBuilder("mdfind", "-name", "adb", "-onlyin", "/")
+                .redirectErrorStream(true)
+                .start()
+            val results = process.inputStream.bufferedReader().readLines()
+            process.waitFor(10, TimeUnit.SECONDS)
+
+            // Filter for actual adb executables in platform-tools
+            for (line in results) {
+                if (line.contains("platform-tools") && line.endsWith("/adb")) {
+                    val adbPath = File(line)
+                    if (adbPath.exists() && adbPath.canExecute()) {
+                        return adbPath.absolutePath
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logger.debug("Failed to find adb with Spotlight: ${e.message}")
+        }
         return null
     }
     

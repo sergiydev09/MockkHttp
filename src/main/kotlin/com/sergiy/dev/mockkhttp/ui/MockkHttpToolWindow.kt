@@ -51,6 +51,16 @@ class MockkHttpToolWindow(project: Project) : JPanel(BorderLayout()) {
             throw e
         }
 
+        // Add Settings tab
+        try {
+            val settingsPanel = SettingsPanel(project)
+            tabbedPane.addTab("Settings", settingsPanel)
+            logger.debug("Settings panel added successfully")
+        } catch (e: Exception) {
+            logger.error("Failed to create Settings panel", e)
+            throw e
+        }
+
         // Add Help tab
         try {
             val helpPanel = HelpPanel(project)
