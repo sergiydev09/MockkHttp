@@ -393,37 +393,49 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun refreshEmulators() {
-        val emulators = emulatorManager.getConnectedEmulators()
         val previousSelection = selectedEmulator
 
-        emulatorComboBox.removeAllItems()
-        emulators.forEach { emulator ->
-            emulatorComboBox.addItem(emulator)
-        }
+        // Run ADB operation in background to avoid blocking EDT
+        object : Task.Backgroundable(project, "Refreshing Emulators...", false) {
+            private var emulators: List<EmulatorInfo> = emptyList()
 
-        // Try to restore previous selection if the emulator is still connected
-        if (previousSelection != null && emulators.any { it.serialNumber == previousSelection.serialNumber }) {
-            val index = emulators.indexOfFirst { it.serialNumber == previousSelection.serialNumber }
-            if (index >= 0) {
-                emulatorComboBox.selectedIndex = index
-                logger.debug("Restored emulator selection: ${previousSelection.displayName}")
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                emulators = emulatorManager.getConnectedEmulators()
             }
-        } else if (emulators.isNotEmpty() && selectedEmulator == null) {
-            // Only auto-select first if nothing was selected before
-            emulatorComboBox.selectedIndex = 0
-            logger.debug("Auto-selected first emulator")
-        } else if (previousSelection != null && emulators.none { it.serialNumber == previousSelection.serialNumber }) {
-            // Previously selected emulator is now disconnected
-            logger.warn("⚠️ Previously selected emulator disconnected")
-            selectedEmulator = null
-            selectedApp = null
 
-            // Stop interceptor if running
-            if (currentMode != Mode.STOPPED) {
-                logger.warn("⚠️ Stopping interceptor due to emulator disconnection")
-                stop()
+            override fun onSuccess() {
+                // Update UI on EDT
+                emulatorComboBox.removeAllItems()
+                emulators.forEach { emulator ->
+                    emulatorComboBox.addItem(emulator)
+                }
+
+                // Try to restore previous selection if the emulator is still connected
+                if (previousSelection != null && emulators.any { it.serialNumber == previousSelection.serialNumber }) {
+                    val index = emulators.indexOfFirst { it.serialNumber == previousSelection.serialNumber }
+                    if (index >= 0) {
+                        emulatorComboBox.selectedIndex = index
+                        logger.debug("Restored emulator selection: ${previousSelection.displayName}")
+                    }
+                } else if (emulators.isNotEmpty() && selectedEmulator == null) {
+                    // Only auto-select first if nothing was selected before
+                    emulatorComboBox.selectedIndex = 0
+                    logger.debug("Auto-selected first emulator")
+                } else if (previousSelection != null && emulators.none { it.serialNumber == previousSelection.serialNumber }) {
+                    // Previously selected emulator is now disconnected
+                    logger.warn("⚠️ Previously selected emulator disconnected")
+                    selectedEmulator = null
+                    selectedApp = null
+
+                    // Stop interceptor if running
+                    if (currentMode != Mode.STOPPED) {
+                        logger.warn("⚠️ Stopping interceptor due to emulator disconnection")
+                        stop()
+                    }
+                }
             }
-        }
+        }.queue()
     }
 
     private fun onEmulatorSelected() {
@@ -437,27 +449,49 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun refreshApps() {
         val emulator = selectedEmulator ?: return
-        val allApps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
 
-        // Filter to show only apps with MockkHttp interceptor
-        val mockkHttpApps = allApps.filter { it.hasMockkHttp }
-
-        logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp out of ${allApps.size} total apps")
-
+        // Disable button and show loading state
+        refreshAppsButton.isEnabled = false
         appComboBox.removeAllItems()
 
-        if (mockkHttpApps.isEmpty()) {
-            // Show a placeholder message if no MockkHttp apps found
-            logger.warn("⚠️ No apps with MockkHttp found. Make sure you've added the Gradle plugin to your app.")
-        } else {
-            mockkHttpApps.forEach { app ->
-                appComboBox.addItem(app)
+        // Run ADB operation in background to avoid blocking EDT
+        object : Task.Backgroundable(project, "Scanning Apps...", false) {
+            private var mockkHttpApps: List<AppInfo> = emptyList()
+            private var totalApps = 0
+
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                indicator.text = "Scanning installed apps..."
+
+                val allApps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
+                totalApps = allApps.size
+
+                // Filter to show only apps with MockkHttp interceptor
+                mockkHttpApps = allApps.filter { it.hasMockkHttp }
             }
 
-            if (mockkHttpApps.isNotEmpty()) {
-                appComboBox.selectedIndex = 0
+            override fun onSuccess() {
+                // Update UI on EDT
+                logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp out of $totalApps total apps")
+
+                if (mockkHttpApps.isEmpty()) {
+                    logger.warn("⚠️ No apps with MockkHttp found. Make sure you've added the Gradle plugin to your app.")
+                } else {
+                    mockkHttpApps.forEach { app ->
+                        appComboBox.addItem(app)
+                    }
+                    appComboBox.selectedIndex = 0
+                }
+
+                // Re-enable button
+                refreshAppsButton.isEnabled = selectedEmulator != null
             }
-        }
+
+            override fun onThrowable(error: Throwable) {
+                logger.error("Failed to scan apps: ${error.message}")
+                refreshAppsButton.isEnabled = selectedEmulator != null
+            }
+        }.queue()
     }
 
     private fun onAppSelected() {

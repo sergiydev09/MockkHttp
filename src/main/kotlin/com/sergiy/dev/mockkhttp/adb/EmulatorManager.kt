@@ -47,7 +47,7 @@ class EmulatorManager(private val project: Project) {
             // Find ADB executable - first check settings, then auto-detect
             val adbPath = getConfiguredOrDetectedAdbPath()
             if (adbPath == null) {
-                logger.error("ADB executable not found. Please configure it in Settings tab or install Android SDK Platform Tools.")
+                logger.warn("⚠️ ADB executable not found. Please configure it in Settings tab or install Android SDK Platform Tools.")
                 return false
             }
 
@@ -335,16 +335,16 @@ class EmulatorManager(private val project: Project) {
             logger.debug("Failed to run which/where command: ${e.message}")
         }
 
-        // Log all tried paths for debugging
-        logger.error("❌ ADB not found. Tried the following locations:")
-        triedPaths.forEach { logger.error("  - $it") }
-        logger.error("💡 Solutions:")
-        logger.error("  1. Install Android SDK Platform Tools: brew install --cask android-platform-tools")
-        logger.error("  2. Set ANDROID_HOME in your shell profile (~/.zshrc or ~/.bash_profile):")
-        logger.error("     export ANDROID_HOME=\$HOME/Library/Android/sdk")
-        logger.error("     export PATH=\$PATH:\$ANDROID_HOME/platform-tools")
-        logger.error("  3. Restart Android Studio after setting environment variables")
-        logger.error("  4. Or launch Android Studio from terminal: open -a 'Android Studio'")
+        // Log all tried paths for debugging (use WARN level to avoid IDE issues in CI environments)
+        logger.warn("⚠️ ADB not found. Tried the following locations:")
+        triedPaths.forEach { logger.warn("  - $it") }
+        logger.warn("💡 Solutions:")
+        logger.warn("  1. Install Android SDK Platform Tools: brew install --cask android-platform-tools")
+        logger.warn("  2. Set ANDROID_HOME in your shell profile (~/.zshrc or ~/.bash_profile):")
+        logger.warn("     export ANDROID_HOME=\$HOME/Library/Android/sdk")
+        logger.warn("     export PATH=\$PATH:\$ANDROID_HOME/platform-tools")
+        logger.warn("  3. Restart Android Studio after setting environment variables")
+        logger.warn("  4. Or launch Android Studio from terminal: open -a 'Android Studio'")
 
         return null
     }

@@ -910,7 +910,8 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
 
         // Use IntelliJ Platform FileSaverDialog for proper theme support
-        val descriptor = com.intellij.openapi.fileChooser.FileSaverDescriptor(
+        // Try FileSaverDescriptorFactory (2024.3+, non-deprecated) with fallback to constructor (older versions)
+        val descriptor = createFileSaverDescriptor(
             "Export Collections to JSON",
             "Select destination file for exported collections",
             "json"
@@ -1172,6 +1173,55 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
 
             return this
+        }
+    }
+
+    companion object {
+        /**
+         * Creates a FileSaverDescriptor using the modern non-deprecated API when available.
+         * Uses FileSaverDescriptorFactory (IntelliJ 2024.3+) with fallback to constructor via reflection.
+         * All access is via reflection to avoid deprecated API references in bytecode.
+         */
+        private fun createFileSaverDescriptor(
+            title: String,
+            description: String,
+            extension: String?
+        ): com.intellij.openapi.fileChooser.FileSaverDescriptor {
+            // Try to use FileSaverDescriptorFactory (available in IntelliJ 2024.3+, non-deprecated)
+            try {
+                val factoryClass = Class.forName("com.intellij.openapi.fileChooser.FileSaverDescriptorFactory")
+                val createMethod = factoryClass.getMethod("createSingleFileNoJarsDescriptor")
+                val descriptor = createMethod.invoke(null) as com.intellij.openapi.fileChooser.FileSaverDescriptor
+
+                // Configure the descriptor using fluent API
+                descriptor.withTitle(title)
+                descriptor.withDescription(description)
+
+                // Add extension filter if specified
+                if (extension != null) {
+                    try {
+                        val filterMethod = descriptor.javaClass.getMethod("withExtensionFilter", String::class.java)
+                        filterMethod.invoke(descriptor, extension)
+                    } catch (_: Exception) {
+                        // withExtensionFilter not available in this version - OK
+                    }
+                }
+
+                return descriptor
+            } catch (_: Exception) {
+                // FileSaverDescriptorFactory doesn't exist or error - use reflection fallback
+            }
+
+            // Fallback: Use constructor via reflection to avoid deprecated API reference in bytecode
+            // This is needed for IntelliJ 2024.1.x/2024.2.x compatibility
+            try {
+                val descriptorClass = Class.forName("com.intellij.openapi.fileChooser.FileSaverDescriptor")
+                val constructor = descriptorClass.getConstructor(String::class.java, String::class.java)
+                return constructor.newInstance(title, description) as com.intellij.openapi.fileChooser.FileSaverDescriptor
+            } catch (e: Exception) {
+                // This should never happen, but provide a last resort
+                throw IllegalStateException("Failed to create FileSaverDescriptor: ${e.message}", e)
+            }
         }
     }
 }

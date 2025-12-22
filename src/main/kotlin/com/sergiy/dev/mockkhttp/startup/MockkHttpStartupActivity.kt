@@ -57,7 +57,8 @@ class MockkHttpStartupActivity : ProjectActivity {
             logger.info("✅ ADB auto-detected: $detectedAdbPath")
             showSuccessNotification(project, "ADB auto-detected at: $detectedAdbPath")
         } else {
-            logger.error("❌ ADB not found - user action required")
+            // Use WARN instead of ERROR - ADB not being available is expected in CI/headless environments
+            logger.warn("⚠️ ADB not found - user action required")
             showErrorNotification(
                 project,
                 "ADB Not Found",
