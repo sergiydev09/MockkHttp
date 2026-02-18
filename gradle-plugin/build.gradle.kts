@@ -16,10 +16,14 @@ repositories {
 }
 
 dependencies {
-    implementation("com.android.tools.build:gradle:8.7.3")
-    implementation("org.ow2.asm:asm:9.6")
-    implementation("org.ow2.asm:asm-commons:9.6")
-    implementation("org.ow2.asm:asm-tree:9.6")
+    // compileOnly: the host project provides AGP at runtime.
+    // This avoids classpath conflicts when users have AGP 9+ (or any other version).
+    compileOnly("com.android.tools.build:gradle:8.7.3")
+
+    // compileOnly: AGP already bundles ASM; shipping our own copy causes version conflicts.
+    compileOnly("org.ow2.asm:asm:9.6")
+    compileOnly("org.ow2.asm:asm-commons:9.6")
+    compileOnly("org.ow2.asm:asm-tree:9.6")
 }
 
 gradlePlugin {
