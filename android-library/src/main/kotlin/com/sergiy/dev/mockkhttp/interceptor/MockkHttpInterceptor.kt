@@ -1,6 +1,7 @@
 package com.sergiy.dev.mockkhttp.interceptor
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import com.google.gson.Gson
 import okhttp3.*
@@ -31,7 +32,7 @@ import java.net.SocketTimeoutException
  */
 class MockkHttpInterceptor @JvmOverloads constructor(
     context: Context? = null,
-    private val pluginHost: String = "10.0.2.2",  // Host machine from emulator
+    private val pluginHost: String = detectPluginHost(),
     private val pluginPort: Int = 9876
 ) : Interceptor {
 
@@ -147,6 +148,32 @@ class MockkHttpInterceptor @JvmOverloads constructor(
             if (removed > 0) {
                 Log.d(TAG, "🧹 Cleaned up $removed old request entries")
             }
+        }
+
+        /**
+         * Detect the correct host address to reach the IntelliJ plugin.
+         * - Emulator: 10.0.2.2 (special alias for host loopback)
+         * - Physical device: 127.0.0.1 (via adb reverse port forwarding)
+         */
+        private fun detectPluginHost(): String {
+            val host = if (isRunningOnEmulator()) "10.0.2.2" else "127.0.0.1"
+            Log.d(TAG, "🔌 Plugin host: $host (emulator=${isRunningOnEmulator()})")
+            return host
+        }
+
+        /**
+         * Detect if running on an Android emulator vs a physical device.
+         */
+        private fun isRunningOnEmulator(): Boolean {
+            return Build.FINGERPRINT.startsWith("generic") ||
+                    Build.FINGERPRINT.startsWith("unknown") ||
+                    Build.MODEL.contains("google_sdk") ||
+                    Build.MODEL.contains("Emulator") ||
+                    Build.MODEL.contains("Android SDK built for") ||
+                    Build.HARDWARE.contains("goldfish") ||
+                    Build.HARDWARE.contains("ranchu") ||
+                    Build.PRODUCT.contains("sdk") ||
+                    Build.PRODUCT.contains("emulator")
         }
 
         /**

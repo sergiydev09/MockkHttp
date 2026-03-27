@@ -3,11 +3,11 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     `kotlin-dsl`
     `maven-publish`
-    id("com.gradle.plugin-publish") version "1.2.1"
+    id("com.gradle.plugin-publish") version "2.0.0"
 }
 
 group = "io.github.sergiydev09.mockkhttp"
-version = "1.4.31"
+version = "1.5.0"
 
 repositories {
     google()
@@ -18,12 +18,12 @@ repositories {
 dependencies {
     // compileOnly: the host project provides AGP at runtime.
     // This avoids classpath conflicts when users have AGP 9+ (or any other version).
-    compileOnly("com.android.tools.build:gradle:8.7.3")
+    compileOnly("com.android.tools.build:gradle:8.12.3")
 
     // compileOnly: AGP already bundles ASM; shipping our own copy causes version conflicts.
-    compileOnly("org.ow2.asm:asm:9.6")
-    compileOnly("org.ow2.asm:asm-commons:9.6")
-    compileOnly("org.ow2.asm:asm-tree:9.6")
+    compileOnly("org.ow2.asm:asm:9.9.1")
+    compileOnly("org.ow2.asm:asm-commons:9.9.1")
+    compileOnly("org.ow2.asm:asm-tree:9.9.1")
 }
 
 gradlePlugin {

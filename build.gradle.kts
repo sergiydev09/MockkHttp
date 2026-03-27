@@ -1,13 +1,13 @@
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "2.1.0"
-    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
-    id("com.android.library") version "8.7.3" apply false
-    id("org.jetbrains.intellij.platform") version "2.5.0"
+    id("org.jetbrains.kotlin.jvm") version "2.1.21"
+    id("org.jetbrains.kotlin.android") version "2.1.21" apply false
+    id("com.android.library") version "8.12.3" apply false
+    id("org.jetbrains.intellij.platform") version "2.11.0"
 }
 
 group = "com.sergiy.dev"
-version = "1.4.36"
+version = "1.5.0"
 
 repositories {
     mavenCentral()
@@ -26,17 +26,17 @@ dependencies {
     }
     
     // ADB/ddmlib for emulator communication (standalone, no Android plugin needed)
-    implementation("com.android.tools.ddms:ddmlib:31.7.2")
-    
+    implementation("com.android.tools.ddms:ddmlib:32.0.1")
+
     // HTTP client for mitmproxy communication
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    
+
     // JSON parsing
-    implementation("com.google.code.gson:gson:2.10.1")
-    
+    implementation("com.google.code.gson:gson:2.13.2")
+
     // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
 }
 
 intellijPlatform {
@@ -50,14 +50,15 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.4.36 - Complete Bytecode Clean</h3>
+            <h3>Version 1.5.0 - Physical Device Support & AGP 9 Compatibility</h3>
             <ul>
-                <li><strong>✅ ZERO DEPRECATED REFS:</strong> ALL FileSaverDescriptor access via reflection - no deprecated bytecode references</li>
-                <li><strong>🔧 Full Reflection:</strong> Both Factory and constructor accessed via Class.forName() + getConstructor()</li>
-                <li><strong>🎯 Plugin Verifier Clean:</strong> Bytecode contains no direct deprecated API calls</li>
+                <li><strong>📲 Physical Devices:</strong> Full support for physical Android devices via automatic ADB reverse port forwarding</li>
+                <li><strong>🔌 Auto Host Detection:</strong> Interceptor auto-detects emulator vs physical device and uses correct host address</li>
+                <li><strong>🔧 AGP 9 Fix:</strong> Gradle plugin now compatible with AGP 9+ (changed bundled dependencies to compileOnly)</li>
+                <li><strong>📱 Device Selector:</strong> UI now shows both emulators and physical devices with distinct icons</li>
             </ul>
 
-            <h3>Previous: Version 1.4.34 - UI Responsiveness Fix</h3>
+            <h3>Previous: Version 1.4.36 - Complete Bytecode Clean</h3>
             <ul>
                 <li><strong>🚀 PERFORMANCE FIX:</strong> Refresh buttons no longer block Android Studio UI</li>
                 <li><strong>⚡ Background Operations:</strong> Emulator and app scanning now run in background threads</li>
@@ -194,7 +195,7 @@ intellijPlatform {
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.4.31"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.5.0"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! No repository configuration needed</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
@@ -216,7 +217,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.4.31"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.5.0"</code></li>
             </ul>
         """.trimIndent()
     }

@@ -4,6 +4,7 @@ import com.android.ddmlib.IDevice
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
+import kotlinx.coroutines.*
 import java.util.concurrent.TimeUnit
 
 /**
@@ -16,64 +17,70 @@ class AppManager(project: Project) {
     private val logger = MockkHttpLogger.getInstance(project)
     private val emulatorManager = EmulatorManager.getInstance(project)
     
+    private val scanDispatcher = Dispatchers.IO.limitedParallelism(10)
+
     companion object {
         fun getInstance(project: Project): AppManager {
             return project.getService(AppManager::class.java)
         }
-        
+
         private const val SHELL_TIMEOUT_SECONDS = 30L
     }
     
     /**
-     * Get list of installed applications on emulator.
-     * @param serialNumber Emulator serial number
+     * Get list of installed applications on device that have MockkHttp.
+     * Uses the proven per-app detection (pm path + grep -c) which works
+     * reliably on both emulators and physical devices.
+     * Only fetches details (dumpsys) for matching apps.
+     * @param serialNumber Device serial number
      * @param includeSystem Whether to include system apps
      */
     fun getInstalledApps(serialNumber: String, includeSystem: Boolean = false): List<AppInfo> {
-        logger.info("📱 Listing installed apps on $serialNumber (includeSystem=$includeSystem)...")
-        
+        logger.info("📱 Scanning apps with MockkHttp on $serialNumber...")
+
         try {
             val device = getDevice(serialNumber)
             if (device == null) {
                 logger.error("Device not found: $serialNumber")
                 return emptyList()
             }
-            
-            // Get package list
+
+            // Step 1: Get all third-party package names (single command)
             val receiver = EmulatorManager.CollectingOutputReceiver()
-            val command = if (includeSystem) {
-                "pm list packages"
-            } else {
-                "pm list packages -3"  // Only third-party apps
-            }
-            
-            logger.debug("Executing command: $command")
-            device.executeShellCommand(command, receiver, SHELL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            
-            val output = receiver.output
-            val packageNames = output.lines()
+            val command = if (includeSystem) "pm list packages" else "pm list packages -3"
+            device.executeShellCommand(command, receiver, 30, TimeUnit.SECONDS)
+
+            val packageNames = receiver.output.lines()
                 .filter { it.startsWith("package:") }
                 .map { it.removePrefix("package:").trim() }
-            
-            logger.debug("Found ${packageNames.size} package(s)")
-            
-            // Convert to AppInfo (we'll parse more details if needed)
-            val apps = packageNames.map { packageName ->
-                createAppInfo(device, packageName)
+                .filter { it.isNotBlank() }
+
+            logger.info("📦 Found ${packageNames.size} packages, checking for MockkHttp...")
+
+            if (packageNames.isEmpty()) return emptyList()
+
+            // Step 2: Check all apps in parallel (10 concurrent ADB connections)
+            val mockkHttpPackages = runBlocking {
+                packageNames.map { pkg ->
+                    async(scanDispatcher) {
+                        if (hasMockkHttpInstalled(device, pkg)) pkg else null
+                    }
+                }.awaitAll().filterNotNull()
             }
-            
-            logger.info("✅ Retrieved ${apps.size} app(s) from $serialNumber")
-            
-            // Log some examples
-            apps.take(3).forEach { app ->
-                logger.debug("  - ${app.fullDescription}")
+
+            logger.info("🔍 Found ${mockkHttpPackages.size} app(s) with MockkHttp")
+
+            // Step 3: Get details only for matching apps (dumpsys per match)
+            val apps = mockkHttpPackages.map { pkg ->
+                createAppInfo(device, pkg, hasMockkHttp = true)
             }
-            if (apps.size > 3) {
-                logger.debug("  ... and ${apps.size - 3} more")
+
+            apps.forEach { app ->
+                logger.info("  ✅ ${app.packageName} (v${app.versionName ?: "?"})")
             }
-            
+
             return apps
-            
+
         } catch (e: Exception) {
             logger.error("Failed to get installed apps on $serialNumber", e)
             return emptyList()
@@ -82,36 +89,21 @@ class AppManager(project: Project) {
 
     /**
      * Get IDevice from serial number.
+     * Works with both emulators and physical devices.
      */
     private fun getDevice(serialNumber: String): IDevice? {
-        val emulator = emulatorManager.getEmulator(serialNumber)
-        if (emulator == null) {
-            logger.warn("Emulator not found: $serialNumber")
+        val device = emulatorManager.getDevice(serialNumber)
+        if (device == null) {
+            logger.warn("Device not found: $serialNumber")
             return null
         }
-        
-        if (!emulator.isOnline) {
-            logger.warn("Emulator is not online: $serialNumber")
+
+        if (!device.isOnline) {
+            logger.warn("Device is not online: $serialNumber")
             return null
         }
-        
-        // Access the bridge through reflection or use the manager
-        // For now, we'll get it from EmulatorManager
-        return emulatorManager.getConnectedEmulators()
-            .find { it.serialNumber == serialNumber }
-            ?.let { _ ->
-                // We need to access the actual IDevice
-                // This is a bit hacky, but ddmlib doesn't expose it directly
-                try {
-                    val bridgeField = EmulatorManager::class.java.getDeclaredField("adbBridge")
-                    bridgeField.isAccessible = true
-                    val bridge = bridgeField.get(emulatorManager) as? com.android.ddmlib.AndroidDebugBridge
-                    bridge?.devices?.find { it.serialNumber == serialNumber }
-                } catch (e: Exception) {
-                    logger.error("Failed to get IDevice for $serialNumber", e)
-                    null
-                }
-            }
+
+        return device
     }
     
     /**
@@ -184,6 +176,7 @@ class AppManager(project: Project) {
     /**
      * Check if an app has MockkHttp interceptor installed.
      * Returns true if the app contains the MockkHttpInterceptor class.
+     * Uses multiple detection methods for compatibility with emulators and physical devices.
      */
     private fun hasMockkHttpInstalled(device: IDevice, packageName: String): Boolean {
         try {
@@ -191,39 +184,57 @@ class AppManager(project: Project) {
             val pathReceiver = EmulatorManager.CollectingOutputReceiver()
             device.executeShellCommand("pm path $packageName", pathReceiver, 5, TimeUnit.SECONDS)
 
-            val apkPath = pathReceiver.output
+            val apkPaths = pathReceiver.output
                 .lines()
-                .firstOrNull { it.startsWith("package:") }
-                ?.removePrefix("package:")
-                ?.trim()
+                .filter { it.startsWith("package:") }
+                .map { it.removePrefix("package:").trim() }
 
-            if (apkPath.isNullOrBlank()) {
+            if (apkPaths.isEmpty()) {
                 logger.debug("Could not find APK path for $packageName")
                 return false
             }
 
-            logger.debug("APK path for $packageName: $apkPath")
+            logger.debug("APK paths for $packageName: $apkPaths")
 
-            // Use dexdump to list classes in the APK
-            // Looking for: com.sergiy.dev.mockkhttp.interceptor.MockkHttpInterceptor
-            val dexReceiver = EmulatorManager.CollectingOutputReceiver()
-            device.executeShellCommand(
-                "dexdump -f $apkPath | grep 'com.sergiy.dev.mockkhttp.interceptor.MockkHttpInterceptor'",
-                dexReceiver,
-                10,
-                TimeUnit.SECONDS
-            )
+            // Try each APK path (split APKs may have multiple)
+            for (apkPath in apkPaths) {
+                // Method 1: grep the binary APK for the class name string (works on all devices)
+                val grepReceiver = EmulatorManager.CollectingOutputReceiver()
+                device.executeShellCommand(
+                    "grep -c 'MockkHttpInterceptor' $apkPath",
+                    grepReceiver,
+                    10,
+                    TimeUnit.SECONDS
+                )
 
-            val dexOutput = dexReceiver.output
-            val hasMockkHttp = dexOutput.contains("MockkHttpInterceptor")
+                val grepOutput = grepReceiver.output.trim()
+                val matchCount = grepOutput.toIntOrNull() ?: 0
+                if (matchCount > 0) {
+                    logger.info("✅ $packageName HAS MockkHttp interceptor! (grep: $matchCount matches in $apkPath)")
+                    return true
+                }
 
-            if (hasMockkHttp) {
-                logger.info("✅ $packageName HAS MockkHttp interceptor!")
-            } else {
-                logger.debug("📝 $packageName does NOT have MockkHttp")
+                // Method 2: dexdump fallback (available on emulators and some devices)
+                try {
+                    val dexReceiver = EmulatorManager.CollectingOutputReceiver()
+                    device.executeShellCommand(
+                        "dexdump -f $apkPath 2>/dev/null | grep 'com.sergiy.dev.mockkhttp.interceptor.MockkHttpInterceptor'",
+                        dexReceiver,
+                        10,
+                        TimeUnit.SECONDS
+                    )
+
+                    if (dexReceiver.output.contains("MockkHttpInterceptor")) {
+                        logger.info("✅ $packageName HAS MockkHttp interceptor! (dexdump)")
+                        return true
+                    }
+                } catch (e: Exception) {
+                    logger.debug("dexdump not available for $apkPath: ${e.message}")
+                }
             }
 
-            return hasMockkHttp
+            logger.debug("📝 $packageName does NOT have MockkHttp")
+            return false
 
         } catch (e: Exception) {
             logger.debug("Failed to check MockkHttp for $packageName: ${e.message}")
@@ -233,17 +244,11 @@ class AppManager(project: Project) {
 
     /**
      * Create AppInfo from package name.
-     * Parses package details if possible.
+     * @param hasMockkHttp Pre-determined MockkHttp status (from batch scan)
      */
-    private fun createAppInfo(device: IDevice, packageName: String): AppInfo {
+    private fun createAppInfo(device: IDevice, packageName: String, hasMockkHttp: Boolean = false): AppInfo {
         try {
-            // Get UID using reliable method
-            val uid = getAppUid(device, packageName)
-
-            // Check if app has MockkHttp interceptor
-            val hasMockkHttp = hasMockkHttpInstalled(device, packageName)
-
-            // Get version info from dumpsys
+            // Get version info from dumpsys (single command for UID + version)
             val receiver = EmulatorManager.CollectingOutputReceiver()
             device.executeShellCommand(
                 "dumpsys package $packageName",
@@ -253,6 +258,7 @@ class AppManager(project: Project) {
             )
 
             val output = receiver.output
+
             val versionName = output.lines()
                 .find { it.contains("versionName") }
                 ?.substringAfter("versionName=")
@@ -265,12 +271,16 @@ class AppManager(project: Project) {
                 ?.split(Regex("\\s+"))?.firstOrNull()
                 ?.toIntOrNull()
 
+            // Extract UID from the same dumpsys output (avoids extra shell command)
+            val uid = listOf(Regex("userId=(\\d+)"), Regex("appId=(\\d+)"), Regex("uid=(\\d+)"))
+                .firstNotNullOfOrNull { it.find(output)?.groupValues?.get(1)?.toIntOrNull() }
+
             return AppInfo(
                 packageName = packageName,
-                appName = null,  // Would need to parse from AndroidManifest or use pm dump
+                appName = null,
                 versionName = versionName,
                 versionCode = versionCode,
-                isSystemApp = false,  // We're only getting third-party apps
+                isSystemApp = false,
                 uid = uid,
                 hasMockkHttp = hasMockkHttp
             )
@@ -284,7 +294,7 @@ class AppManager(project: Project) {
                 versionCode = null,
                 isSystemApp = false,
                 uid = null,
-                hasMockkHttp = false
+                hasMockkHttp = hasMockkHttp
             )
         }
     }

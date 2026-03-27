@@ -515,36 +515,43 @@ class EmulatorManager(private val project: Project) {
      * Returns only emulators, not physical devices.
      */
     fun getConnectedEmulators(): List<EmulatorInfo> {
-        logger.info("🔍 Detecting connected emulators...")
-        
+        return getConnectedDevices().filter { it.isEmulator }
+    }
+
+    /**
+     * Get list of ALL connected devices (emulators + physical devices).
+     */
+    fun getConnectedDevices(): List<EmulatorInfo> {
+        logger.info("🔍 Detecting connected devices...")
+
         if (!isInitialized) {
             logger.warn("ADB not initialized, attempting to initialize...")
             if (!initialize()) {
-                logger.error("Cannot detect emulators: ADB initialization failed")
+                logger.error("Cannot detect devices: ADB initialization failed")
                 return emptyList()
             }
         }
-        
+
         try {
             val devices = adbBridge?.devices ?: emptyArray()
             logger.debug("Found ${devices.size} device(s) connected")
-            
-            val emulators = devices
-                .filter { it.isEmulator }
-                .map { device ->
-                    logger.debug("Processing emulator: ${device.serialNumber}")
-                    convertToEmulatorInfo(device)
-                }
-            
-            logger.info("✅ Found ${emulators.size} emulator(s)")
-            emulators.forEach { emulator ->
-                logger.debug("  - ${emulator.fullDescription}")
+
+            val deviceList = devices.map { device ->
+                logger.debug("Processing device: ${device.serialNumber} (emulator=${device.isEmulator})")
+                convertToEmulatorInfo(device)
             }
-            
-            return emulators
-            
+
+            val emulatorCount = deviceList.count { it.isEmulator }
+            val physicalCount = deviceList.count { !it.isEmulator }
+            logger.info("✅ Found $emulatorCount emulator(s) and $physicalCount physical device(s)")
+            deviceList.forEach { device ->
+                logger.debug("  - ${device.fullDescription}")
+            }
+
+            return deviceList
+
         } catch (e: Exception) {
-            logger.error("Failed to get connected emulators", e)
+            logger.error("Failed to get connected devices", e)
             return emptyList()
         }
     }
@@ -606,8 +613,61 @@ class EmulatorManager(private val project: Project) {
             isOnline = device.isOnline,
             architecture = architecture,
             manufacturer = manufacturer,
-            model = model
+            model = model,
+            isEmulator = device.isEmulator
         )
+    }
+
+    /**
+     * Set up ADB reverse port forwarding for physical devices.
+     * Maps device's localhost:remotePort to host's localhost:localPort.
+     * This allows physical devices to reach the plugin server via localhost.
+     */
+    fun setupAdbReverse(serialNumber: String, remotePort: Int, localPort: Int): Boolean {
+        val adbPath = getConfiguredOrDetectedAdbPath()
+        if (adbPath == null) {
+            logger.error("❌ Cannot set up ADB reverse: ADB path not found")
+            return false
+        }
+
+        try {
+            logger.info("🔄 Setting up ADB reverse: device:$remotePort -> host:$localPort (device=$serialNumber)")
+            val process = ProcessBuilder(adbPath, "-s", serialNumber, "reverse", "tcp:$remotePort", "tcp:$localPort")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText().trim()
+            val success = process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0
+
+            if (success) {
+                logger.info("✅ ADB reverse port forwarding active: device:$remotePort -> host:$localPort")
+            } else {
+                logger.error("❌ Failed to set up ADB reverse: $output")
+            }
+            return success
+        } catch (e: Exception) {
+            logger.error("❌ Failed to set up ADB reverse", e)
+            return false
+        }
+    }
+
+    /**
+     * Remove ADB reverse port forwarding.
+     */
+    fun removeAdbReverse(serialNumber: String, remotePort: Int): Boolean {
+        val adbPath = getConfiguredOrDetectedAdbPath() ?: return false
+
+        try {
+            logger.info("🔄 Removing ADB reverse for port $remotePort (device=$serialNumber)")
+            val process = ProcessBuilder(adbPath, "-s", serialNumber, "reverse", "--remove", "tcp:$remotePort")
+                .redirectErrorStream(true)
+                .start()
+            process.waitFor(5, TimeUnit.SECONDS)
+            logger.info("✅ ADB reverse removed for port $remotePort")
+            return true
+        } catch (e: Exception) {
+            logger.error("Failed to remove ADB reverse", e)
+            return false
+        }
     }
     
     /**

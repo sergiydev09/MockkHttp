@@ -1,8 +1,8 @@
 package com.sergiy.dev.mockkhttp.adb
 
 /**
- * Data class representing an Android emulator.
- * Contains all relevant information for identifying and working with emulators.
+ * Data class representing an Android device (emulator or physical).
+ * Contains all relevant information for identifying and working with devices.
  */
 data class EmulatorInfo(
     val serialNumber: String,
@@ -11,27 +11,38 @@ data class EmulatorInfo(
     val isOnline: Boolean,
     val architecture: String?,
     val manufacturer: String?,
-    val model: String?
+    val model: String?,
+    val isEmulator: Boolean = true
 ) {
     /**
      * Display name for UI
      */
     val displayName: String
-        get() = avdName ?: serialNumber
-    
+        get() = if (isEmulator) {
+            avdName ?: serialNumber
+        } else {
+            val desc = listOfNotNull(manufacturer, model).joinToString(" ").trim()
+            if (desc.isNotEmpty()) desc else serialNumber
+        }
+
     /**
      * Full description for logging
      */
     val fullDescription: String
         get() = buildString {
-            append("Emulator(")
+            append(if (isEmulator) "Emulator(" else "Device(")
             append("serial=$serialNumber")
-            avdName?.let { append(", avd=$it") }
+            if (isEmulator) {
+                avdName?.let { append(", avd=$it") }
+            } else {
+                manufacturer?.let { append(", manufacturer=$it") }
+                model?.let { append(", model=$it") }
+            }
             append(", api=$apiLevel")
             append(", online=$isOnline")
             architecture?.let { append(", arch=$it") }
             append(")")
         }
-    
+
     override fun toString(): String = displayName
 }

@@ -56,6 +56,8 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private var selectedApp: AppInfo? = null
     private var currentMode: Mode = Mode.STOPPED
     private var searchQuery: String = ""
+    @Volatile
+    private var refreshingDeviceSerial: String? = null
 
     enum class Mode {
         STOPPED,
@@ -77,7 +79,8 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 ): java.awt.Component {
                     super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
                     if (value is EmulatorInfo) {
-                        text = "${value.displayName} (API ${value.apiLevel})"
+                        val typeIcon = if (value.isEmulator) "📱" else "📲"
+                        text = "$typeIcon ${value.displayName} (API ${value.apiLevel})"
                     }
                     return this
                 }
@@ -303,7 +306,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             val selectorsPanel = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
 
-                add(JBLabel("Emulator: "))
+                add(JBLabel("Device: "))
                 add(Box.createHorizontalStrut(5))
                 add(emulatorComboBox.apply {
                     maximumSize = Dimension(250, preferredSize.height)
@@ -396,41 +399,41 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         val previousSelection = selectedEmulator
 
         // Run ADB operation in background to avoid blocking EDT
-        object : Task.Backgroundable(project, "Refreshing Emulators...", false) {
-            private var emulators: List<EmulatorInfo> = emptyList()
+        object : Task.Backgroundable(project, "Refreshing Devices...", false) {
+            private var devices: List<EmulatorInfo> = emptyList()
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                emulators = emulatorManager.getConnectedEmulators()
+                devices = emulatorManager.getConnectedDevices()
             }
 
             override fun onSuccess() {
                 // Update UI on EDT
                 emulatorComboBox.removeAllItems()
-                emulators.forEach { emulator ->
-                    emulatorComboBox.addItem(emulator)
+                devices.forEach { device ->
+                    emulatorComboBox.addItem(device)
                 }
 
-                // Try to restore previous selection if the emulator is still connected
-                if (previousSelection != null && emulators.any { it.serialNumber == previousSelection.serialNumber }) {
-                    val index = emulators.indexOfFirst { it.serialNumber == previousSelection.serialNumber }
+                // Try to restore previous selection if the device is still connected
+                if (previousSelection != null && devices.any { it.serialNumber == previousSelection.serialNumber }) {
+                    val index = devices.indexOfFirst { it.serialNumber == previousSelection.serialNumber }
                     if (index >= 0) {
                         emulatorComboBox.selectedIndex = index
-                        logger.debug("Restored emulator selection: ${previousSelection.displayName}")
+                        logger.debug("Restored device selection: ${previousSelection.displayName}")
                     }
-                } else if (emulators.isNotEmpty() && selectedEmulator == null) {
+                } else if (devices.isNotEmpty() && selectedEmulator == null) {
                     // Only auto-select first if nothing was selected before
                     emulatorComboBox.selectedIndex = 0
-                    logger.debug("Auto-selected first emulator")
-                } else if (previousSelection != null && emulators.none { it.serialNumber == previousSelection.serialNumber }) {
-                    // Previously selected emulator is now disconnected
-                    logger.warn("⚠️ Previously selected emulator disconnected")
+                    logger.debug("Auto-selected first device")
+                } else if (previousSelection != null && devices.none { it.serialNumber == previousSelection.serialNumber }) {
+                    // Previously selected device is now disconnected
+                    logger.warn("⚠️ Previously selected device disconnected")
                     selectedEmulator = null
                     selectedApp = null
 
                     // Stop interceptor if running
                     if (currentMode != Mode.STOPPED) {
-                        logger.warn("⚠️ Stopping interceptor due to emulator disconnection")
+                        logger.warn("⚠️ Stopping interceptor due to device disconnection")
                         stop()
                     }
                 }
@@ -450,6 +453,13 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun refreshApps() {
         val emulator = selectedEmulator ?: return
 
+        // Prevent duplicate scans for the same device
+        if (refreshingDeviceSerial == emulator.serialNumber) {
+            logger.debug("Already scanning apps on ${emulator.serialNumber}, skipping...")
+            return
+        }
+        refreshingDeviceSerial = emulator.serialNumber
+
         // Disable button and show loading state
         refreshAppsButton.isEnabled = false
         appComboBox.removeAllItems()
@@ -457,22 +467,20 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         // Run ADB operation in background to avoid blocking EDT
         object : Task.Backgroundable(project, "Scanning Apps...", false) {
             private var mockkHttpApps: List<AppInfo> = emptyList()
-            private var totalApps = 0
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                indicator.text = "Scanning installed apps..."
+                indicator.text = "Scanning for apps with MockkHttp..."
 
-                val allApps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
-                totalApps = allApps.size
-
-                // Filter to show only apps with MockkHttp interceptor
-                mockkHttpApps = allApps.filter { it.hasMockkHttp }
+                // getInstalledApps already returns only apps with MockkHttp (batch optimized)
+                mockkHttpApps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
             }
 
             override fun onSuccess() {
+                refreshingDeviceSerial = null
+
                 // Update UI on EDT
-                logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp out of $totalApps total apps")
+                logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp")
 
                 if (mockkHttpApps.isEmpty()) {
                     logger.warn("⚠️ No apps with MockkHttp found. Make sure you've added the Gradle plugin to your app.")
@@ -488,6 +496,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
 
             override fun onThrowable(error: Throwable) {
+                refreshingDeviceSerial = null
                 logger.error("Failed to scan apps: ${error.message}")
                 refreshAppsButton.isEnabled = selectedEmulator != null
             }
@@ -605,6 +614,15 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         logger.warn("⚠️  No app selected, will receive ALL flows from all apps")
                     }
 
+                    // Set up ADB reverse for physical devices
+                    val device = selectedEmulator
+                    if (device != null && !device.isEmulator) {
+                        logger.info("📲 Physical device detected, setting up ADB reverse port forwarding...")
+                        if (!emulatorManager.setupAdbReverse(device.serialNumber, OkHttpInterceptorServer.SERVER_PORT, OkHttpInterceptorServer.SERVER_PORT)) {
+                            throw Exception("Failed to set up ADB reverse port forwarding. Make sure the device is connected via USB with USB debugging enabled.")
+                        }
+                    }
+
                     // Map mode to OkHttpInterceptorServer.Mode
                     val serverMode = when (mode) {
                         Mode.RECORDING -> OkHttpInterceptorServer.Mode.RECORDING
@@ -675,6 +693,12 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 try {
                     okHttpInterceptorServer.stop()
                     logger.info("🔌 Stopped OkHttp Interceptor Server")
+
+                    // Clean up ADB reverse for physical devices
+                    val device = selectedEmulator
+                    if (device != null && !device.isEmulator) {
+                        emulatorManager.removeAdbReverse(device.serialNumber, OkHttpInterceptorServer.SERVER_PORT)
+                    }
 
                     SwingUtilities.invokeLater {
                         currentMode = Mode.STOPPED
