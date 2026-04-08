@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.5.0"
+version = "1.5.1"
 
 repositories {
     mavenCentral()
@@ -195,7 +195,7 @@ intellijPlatform {
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.5.0"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.5.1"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! No repository configuration needed</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
@@ -217,7 +217,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.5.0"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.5.1"</code></li>
             </ul>
         """.trimIndent()
     }

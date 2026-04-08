@@ -231,6 +231,9 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         // Setup layout
         setupLayout()
 
+        // Clear any previous listeners (IDE may create the tool window multiple times)
+        flowStore.clearAllListeners()
+
         // Listen to flow changes
         flowStore.addFlowAddedListener { flow ->
             SwingUtilities.invokeLater {

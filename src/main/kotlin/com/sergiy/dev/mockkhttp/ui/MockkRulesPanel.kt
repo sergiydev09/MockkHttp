@@ -114,6 +114,9 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         // Clean up conflicts on initialization
         cleanupConflictsOnLoad()
 
+        // Clear any previous listeners (IDE may create the tool window multiple times)
+        mockkRulesStore.clearAllListeners()
+
         // Listen for new collections
         mockkRulesStore.addCollectionAddedListener { collection ->
             SwingUtilities.invokeLater {
@@ -309,6 +312,13 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
             val collectionNode = rootNode.getChildAt(i) as DefaultMutableTreeNode
             val nodeData = collectionNode.userObject as? TreeNode.CollectionNode
             if (nodeData?.collection?.id == rule.collectionId) {
+                // Check if rule already exists in the tree (addCollectionToTree may have loaded it)
+                val alreadyExists = (0 until collectionNode.childCount).any { j ->
+                    val existingNode = collectionNode.getChildAt(j) as DefaultMutableTreeNode
+                    (existingNode.userObject as? TreeNode.RuleNode)?.rule?.id == rule.id
+                }
+                if (alreadyExists) return
+
                 val ruleNode = DefaultMutableTreeNode(TreeNode.RuleNode(rule))
                 val index = collectionNode.childCount
                 collectionNode.add(ruleNode)

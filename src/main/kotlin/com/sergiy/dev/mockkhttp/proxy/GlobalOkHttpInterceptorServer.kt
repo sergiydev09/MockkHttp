@@ -39,6 +39,11 @@ class GlobalOkHttpInterceptorServer {
     @Volatile
     private var lastActiveProjectId: String? = null
 
+    // Packages that have announced themselves via PING (Flutter and native apps)
+    private val knownMockkHttpPackages = java.util.Collections.synchronizedSet(
+        LinkedHashSet<String>()
+    )
+
     companion object {
         const val SERVER_PORT = 9876
 
@@ -46,6 +51,17 @@ class GlobalOkHttpInterceptorServer {
             return ApplicationManager.getApplication().getService(GlobalOkHttpInterceptorServer::class.java)
         }
     }
+
+    /**
+     * Returns the set of package names that have announced themselves via PING.
+     * Used by AppManager to detect Flutter (and other) apps that can't be found via APK grep.
+     */
+    fun getKnownMockkHttpPackages(): Set<String> = knownMockkHttpPackages.toSet()
+
+    /**
+     * Check if a specific package has announced itself via PING.
+     */
+    fun isKnownMockkHttpPackage(packageName: String): Boolean = packageName in knownMockkHttpPackages
 
     /**
      * Represents a project that is registered to receive flows.
@@ -341,10 +357,16 @@ class GlobalOkHttpInterceptorServer {
                     return
                 }
 
-                // Handle PING
-                if (json == "PING") {
+                // Handle PING (supports "PING" and "PING:<packageName>" for app detection)
+                if (json == "PING" || json.startsWith("PING:")) {
+                    val packageName = if (json.startsWith("PING:")) json.substringAfter("PING:").trim() else null
+                    if (!packageName.isNullOrBlank()) {
+                        knownMockkHttpPackages.add(packageName)
+                        logger.info("📡 PING from $packageName — registered as MockkHttp app")
+                    } else {
+                        logger.debug("📡 PING received, sent PONG")
+                    }
                     writer.println("PONG")
-                    logger.debug("📡 PING received, sent PONG")
                     return
                 }
 

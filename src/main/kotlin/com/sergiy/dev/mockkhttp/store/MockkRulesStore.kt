@@ -485,6 +485,17 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         ruleRemovedListeners.add(listener)
     }
 
+    /**
+     * Clear all listeners. Called before re-registering to prevent duplicates
+     * when the tool window is created multiple times by the IDE.
+     */
+    fun clearAllListeners() {
+        ruleAddedListeners.clear()
+        ruleRemovedListeners.clear()
+        collectionAddedListeners.clear()
+        collectionRemovedListeners.clear()
+    }
+
     // ========== IMPORT/EXPORT METHODS ==========
 
     /**

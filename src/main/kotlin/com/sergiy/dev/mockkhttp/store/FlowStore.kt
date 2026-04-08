@@ -158,4 +158,14 @@ class FlowStore(project: Project) {
         flowsClearedListeners.add(listener)
         logger.debug("Flows cleared listener registered (total: ${flowsClearedListeners.size})")
     }
+
+    /**
+     * Clear all listeners. Called before re-registering to prevent duplicates
+     * when the tool window is created multiple times by the IDE.
+     */
+    fun clearAllListeners() {
+        flowAddedListeners.clear()
+        flowUpdatedListeners.clear()
+        flowsClearedListeners.clear()
+    }
 }

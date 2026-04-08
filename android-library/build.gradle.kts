@@ -10,7 +10,7 @@ repositories {
 }
 
 group = "com.github.sergiydev09.MockkHttp"
-version = "1.5.0"
+version = "1.5.1"
 
 android {
     namespace = "com.sergiy.dev.mockkhttp.interceptor"

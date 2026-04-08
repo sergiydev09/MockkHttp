@@ -34,9 +34,14 @@ class AppManager(project: Project) {
      * Only fetches details (dumpsys) for matching apps.
      * @param serialNumber Device serial number
      * @param includeSystem Whether to include system apps
+     * @param showAllApps If true, returns ALL third-party apps (for Flutter or undetectable integrations)
      */
-    fun getInstalledApps(serialNumber: String, includeSystem: Boolean = false): List<AppInfo> {
-        logger.info("📱 Scanning apps with MockkHttp on $serialNumber...")
+    fun getInstalledApps(serialNumber: String, includeSystem: Boolean = false, showAllApps: Boolean = false): List<AppInfo> {
+        logger.info("📱 Scanning apps on $serialNumber (showAll=$showAllApps)...")
+
+        // Ensure the global server is running so it can receive PING handshakes
+        val globalServer = com.sergiy.dev.mockkhttp.proxy.GlobalOkHttpInterceptorServer.getInstance()
+        globalServer.ensureStarted()
 
         try {
             val device = getDevice(serialNumber)
@@ -55,11 +60,21 @@ class AppManager(project: Project) {
                 .map { it.removePrefix("package:").trim() }
                 .filter { it.isNotBlank() }
 
-            logger.info("📦 Found ${packageNames.size} packages, checking for MockkHttp...")
+            logger.info("📦 Found ${packageNames.size} packages")
 
             if (packageNames.isEmpty()) return emptyList()
 
+            if (showAllApps) {
+                // Return ALL third-party apps without MockkHttp detection
+                logger.info("📋 Returning all ${packageNames.size} third-party apps")
+                val apps = packageNames.map { pkg ->
+                    createAppInfo(device, pkg, hasMockkHttp = false)
+                }
+                return apps
+            }
+
             // Step 2: Check all apps in parallel (10 concurrent ADB connections)
+            logger.info("🔍 Checking for MockkHttp in ${packageNames.size} packages...")
             val mockkHttpPackages = runBlocking {
                 packageNames.map { pkg ->
                     async(scanDispatcher) {
@@ -175,12 +190,37 @@ class AppManager(project: Project) {
 
     /**
      * Check if an app has MockkHttp interceptor installed.
-     * Returns true if the app contains the MockkHttpInterceptor class.
-     * Uses multiple detection methods for compatibility with emulators and physical devices.
+     * Detects both Android native (OkHttp interceptor) and Flutter (Dart package) integrations.
+     *
+     * Detection methods (in order):
+     * 1. PING handshake: App already announced itself to the plugin server
+     * 2. Marker file: Flutter apps write /data/local/tmp/mockk_http_<package> on init
+     * 3. APK grep: Search for "MockkHttpInterceptor" class in APK binary (Android native)
+     * 4. Flutter APK: Pull APK, extract kernel_blob.bin from ZIP, search for "mockk_http" (Flutter debug)
      */
     private fun hasMockkHttpInstalled(device: IDevice, packageName: String): Boolean {
         try {
-            // Get APK path
+            // Method 1: Check if app announced itself via PING handshake
+            val globalServer = com.sergiy.dev.mockkhttp.proxy.GlobalOkHttpInterceptorServer.getInstance()
+            if (globalServer.isKnownMockkHttpPackage(packageName)) {
+                logger.info("✅ $packageName HAS MockkHttp (detected via PING handshake)")
+                return true
+            }
+
+            // Method 2: Check marker file (Flutter apps write this on MockkHttp.init())
+            val markerReceiver = EmulatorManager.CollectingOutputReceiver()
+            device.executeShellCommand(
+                "test -f /data/local/tmp/mockk_http_$packageName && echo EXISTS",
+                markerReceiver,
+                3,
+                TimeUnit.SECONDS
+            )
+            if (markerReceiver.output.trim() == "EXISTS") {
+                logger.info("✅ $packageName HAS MockkHttp (Flutter, marker file detected)")
+                return true
+            }
+
+            // Get APK paths
             val pathReceiver = EmulatorManager.CollectingOutputReceiver()
             device.executeShellCommand("pm path $packageName", pathReceiver, 5, TimeUnit.SECONDS)
 
@@ -194,11 +234,8 @@ class AppManager(project: Project) {
                 return false
             }
 
-            logger.debug("APK paths for $packageName: $apkPaths")
-
-            // Try each APK path (split APKs may have multiple)
             for (apkPath in apkPaths) {
-                // Method 1: grep the binary APK for the class name string (works on all devices)
+                // Method 3: Grep APK binary for Android native class (uncompressed in dex)
                 val grepReceiver = EmulatorManager.CollectingOutputReceiver()
                 device.executeShellCommand(
                     "grep -c 'MockkHttpInterceptor' $apkPath",
@@ -207,29 +244,18 @@ class AppManager(project: Project) {
                     TimeUnit.SECONDS
                 )
 
-                val grepOutput = grepReceiver.output.trim()
-                val matchCount = grepOutput.toIntOrNull() ?: 0
+                val matchCount = grepReceiver.output.trim().toIntOrNull() ?: 0
                 if (matchCount > 0) {
-                    logger.info("✅ $packageName HAS MockkHttp interceptor! (grep: $matchCount matches in $apkPath)")
+                    logger.info("✅ $packageName HAS MockkHttp (Android native, grep: $matchCount matches)")
                     return true
                 }
 
-                // Method 2: dexdump fallback (available on emulators and some devices)
-                try {
-                    val dexReceiver = EmulatorManager.CollectingOutputReceiver()
-                    device.executeShellCommand(
-                        "dexdump -f $apkPath 2>/dev/null | grep 'com.sergiy.dev.mockkhttp.interceptor.MockkHttpInterceptor'",
-                        dexReceiver,
-                        10,
-                        TimeUnit.SECONDS
-                    )
-
-                    if (dexReceiver.output.contains("MockkHttpInterceptor")) {
-                        logger.info("✅ $packageName HAS MockkHttp interceptor! (dexdump)")
-                        return true
-                    }
-                } catch (e: Exception) {
-                    logger.debug("dexdump not available for $apkPath: ${e.message}")
+                // Method 4: Pull APK and check inside the ZIP for Flutter MockkHttp.
+                // This catches Flutter apps where kernel_blob.bin (debug) or libapp.so (release)
+                // contain "mockk_http" strings that are invisible to device-side grep.
+                logger.info("🔍 Pulling APK for $packageName to check for Flutter MockkHttp...")
+                if (checkFlutterApkForMockkHttp(device, apkPath, packageName)) {
+                    return true
                 }
             }
 
@@ -240,6 +266,76 @@ class AppManager(project: Project) {
             logger.debug("Failed to check MockkHttp for $packageName: ${e.message}")
             return false
         }
+    }
+
+    /**
+     * Pull APK from device, open as ZIP, and search compressed entries for MockkHttp strings.
+     * This detects Flutter apps where kernel_blob.bin (debug) or libapp.so (release) contains
+     * Dart strings that are compressed inside the APK and invisible to device-side grep.
+     */
+    private fun checkFlutterApkForMockkHttp(device: IDevice, apkPath: String, packageName: String): Boolean {
+        val tempFile = java.io.File.createTempFile("mockk_flutter_", ".apk")
+        try {
+            // Pull APK from device to local temp file
+            device.pullFile(apkPath, tempFile.absolutePath)
+
+            java.util.zip.ZipFile(tempFile).use { zip ->
+                // Quick check: is this a Flutter app? (just read ZIP directory, no decompression)
+                val hasKernelBlob = zip.getEntry("assets/flutter_assets/kernel_blob.bin") != null
+                val libAppEntry = zip.entries().asSequence().find { it.name.endsWith("libapp.so") }
+                val isFlutter = hasKernelBlob || libAppEntry != null
+
+                if (!isFlutter) {
+                    logger.info("📝 $packageName is not a Flutter app, skipping deep check")
+                    return false
+                }
+
+                logger.info("🔍 $packageName is a Flutter app, searching for MockkHttp...")
+
+                // Check kernel_blob.bin (Flutter debug builds)
+                if (hasKernelBlob) {
+                    val kernelEntry = zip.getEntry("assets/flutter_assets/kernel_blob.bin")!!
+                    val bytes = zip.getInputStream(kernelEntry).readBytes()
+                    if (bytesContainString(bytes, "mockk_http")) {
+                        logger.info("✅ $packageName HAS MockkHttp (Flutter debug, kernel_blob.bin)")
+                        return true
+                    }
+                }
+
+                // Check libapp.so (Flutter release/profile builds)
+                if (libAppEntry != null) {
+                    val bytes = zip.getInputStream(libAppEntry).readBytes()
+                    if (bytesContainString(bytes, "mockk_http")) {
+                        logger.info("✅ $packageName HAS MockkHttp (Flutter release, ${libAppEntry.name})")
+                        return true
+                    }
+                }
+            }
+
+            logger.debug("📝 $packageName is Flutter but does NOT contain MockkHttp")
+            return false
+        } catch (e: Exception) {
+            logger.warn("⚠️ Failed to check Flutter APK for $packageName: ${e.javaClass.simpleName}: ${e.message}")
+            return false
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    /**
+     * Efficiently search for an ASCII string in a byte array without converting the entire array to String.
+     */
+    private fun bytesContainString(bytes: ByteArray, target: String): Boolean {
+        val targetBytes = target.toByteArray(Charsets.US_ASCII)
+        if (targetBytes.size > bytes.size) return false
+
+        outer@ for (i in 0..bytes.size - targetBytes.size) {
+            for (j in targetBytes.indices) {
+                if (bytes[i + j] != targetBytes[j]) continue@outer
+            }
+            return true
+        }
+        return false
     }
 
     /**

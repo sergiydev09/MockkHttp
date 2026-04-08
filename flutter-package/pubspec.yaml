@@ -1,0 +1,17 @@
+name: mockk_http
+description: >-
+  HTTP interceptor for Flutter apps that sends network traffic to the MockkHttp
+  IntelliJ/Android Studio plugin. Supports dio, HttpClient, and any HTTP library.
+  Debug, record, and mock HTTP responses in real-time.
+version: 1.5.1
+homepage: https://github.com/sergiydev09/MockkHttp
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  dio: ">=5.0.0 <6.0.0"
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.24.0
