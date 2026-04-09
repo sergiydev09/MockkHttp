@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'mockk_http_core.dart';
 import 'models.dart';
@@ -253,7 +254,7 @@ class _MockkHttpClientRequest implements HttpClientRequest {
           return _MockkHttpClientResponse(
             statusCode: modified.statusCode ?? buffered.statusCode,
             bodyBytes: modified.body != null
-                ? utf8.encode(modified.body!)
+                ? Uint8List.fromList(utf8.encode(modified.body!))
                 : buffered.bodyBytes,
             headers: modified.headers ?? buffered.headers,
             originalResponse: buffered.original,
@@ -298,7 +299,7 @@ class _MockkHttpClientRequest implements HttpClientRequest {
   /// This is critical — HttpClientResponse is a single-listen stream.
   Future<_BufferedResponse> _bufferResponse(HttpClientResponse response) async {
     final chunks = await response.toList();
-    final allBytes = chunks.expand((b) => b).toList();
+    final allBytes = Uint8List.fromList(chunks.expand((b) => b).toList());
 
     final headers = <String, String>{};
     response.headers.forEach((name, values) {
@@ -397,7 +398,7 @@ class _MockkHttpClientRequest implements HttpClientRequest {
 /// Holds a buffered copy of the response bytes + metadata.
 class _BufferedResponse {
   final int statusCode;
-  final List<int> bodyBytes;
+  final Uint8List bodyBytes;
   final Map<String, String> headers;
   final HttpClientResponse? original;
 
@@ -420,7 +421,7 @@ class _BufferedResponse {
   factory _BufferedResponse.fromMock(MockCheckResponse mock) {
     return _BufferedResponse(
       statusCode: mock.statusCode ?? 200,
-      bodyBytes: utf8.encode(mock.body ?? ''),
+      bodyBytes: Uint8List.fromList(utf8.encode(mock.body ?? '')),
       headers: mock.headers ?? {},
     );
   }
@@ -432,13 +433,13 @@ class _MockkHttpClientResponse extends Stream<List<int>>
     implements HttpClientResponse {
   @override
   final int statusCode;
-  final List<int> _bodyBytes;
+  final Uint8List _bodyBytes;
   final Map<String, String> _headers;
   final HttpClientResponse? _original;
 
   _MockkHttpClientResponse({
     required this.statusCode,
-    required List<int> bodyBytes,
+    required Uint8List bodyBytes,
     required Map<String, String> headers,
     HttpClientResponse? originalResponse,
   })  : _bodyBytes = bodyBytes,
@@ -448,7 +449,7 @@ class _MockkHttpClientResponse extends Stream<List<int>>
   factory _MockkHttpClientResponse.fromMock(MockCheckResponse mock) {
     return _MockkHttpClientResponse(
       statusCode: mock.statusCode ?? 200,
-      bodyBytes: utf8.encode(mock.body ?? ''),
+      bodyBytes: Uint8List.fromList(utf8.encode(mock.body ?? '')),
       headers: mock.headers ?? {},
     );
   }

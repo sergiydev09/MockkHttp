@@ -108,9 +108,9 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                 <h1>🚀 MockkHttp Setup Guide</h1>
 
                 <div class="note">
-                    <strong>⚠️ IMPORTANT - Version 1.5.0 Stable Release</strong>
+                    <strong>⚠️ IMPORTANT - Version 1.5.2 Stable Release</strong>
                     <p>
-                        This version (1.5.0) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
+                        This version (1.5.2) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
                         Just apply the Gradle plugin and it handles everything.
                     </p>
                     <p>
@@ -130,7 +130,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     <pre>plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.5.0"
+    id("io.github.sergiydev09.mockkhttp") version "1.5.2"
 }
 
 // That's it! No dependencies needed.
@@ -217,9 +217,83 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     </ul>
                 </div>
 
+                <h1>🦋 Flutter Setup Guide</h1>
+
+                <div class="note">
+                    <strong>⚠️ Flutter support requires manual initialization</strong>
+                    <p>
+                        Unlike Android native (auto-injection via Gradle plugin), Flutter apps need a single line
+                        of initialization code. The interceptor uses the same protocol and works with all plugin features.
+                    </p>
+                </div>
+
+                <h2>📦 Step 1: Add the Dependency</h2>
+
+                <div class="step">
+                    <p><strong>In your <code>pubspec.yaml</code>:</strong></p>
+                    <pre>dev_dependencies:
+  mockk_http: ^1.5.2</pre>
+                    <p><em>Using <code>dev_dependencies</code> ensures it won't be included in release builds.</em></p>
+                </div>
+
+                <h2>🔧 Step 2: Initialize</h2>
+
+                <div class="step">
+                    <p><strong>Option A: Global HttpOverrides (intercepts ALL HTTP traffic):</strong></p>
+                    <pre>import 'package:mockk_http/mockk_http.dart';
+
+void main() {
+  // Only in debug mode
+  assert(() {
+    MockkHttp.init();
+    return true;
+  }());
+
+  runApp(MyApp());
+}</pre>
+
+                    <p><strong>Option B: Dio Interceptor (recommended for Dio users):</strong></p>
+                    <pre>import 'package:mockk_http/mockk_http.dart';
+
+final dio = Dio();
+dio.interceptors.add(MockkHttpDioInterceptor());</pre>
+                </div>
+
+                <h2>📱 Step 3: Physical Device Setup</h2>
+
+                <div class="step">
+                    <p>For <strong>emulators</strong>: works automatically (uses 10.0.2.2).</p>
+                    <p>For <strong>physical devices</strong>: run ADB reverse port forwarding:</p>
+                    <pre>adb reverse tcp:9876 tcp:9876</pre>
+                </div>
+
+                <h2>✅ Step 4: Start Intercepting</h2>
+
+                <div class="step">
+                    <ol>
+                        <li>Select your emulator/device from the dropdown</li>
+                        <li>Select your Flutter app from the dropdown</li>
+                        <li>Click <strong>"Start Interceptor"</strong></li>
+                        <li>Use your app and make network requests</li>
+                        <li>View captured traffic in the Inspector tab</li>
+                    </ol>
+                </div>
+
+                <h2>🔍 Flutter: How It Works</h2>
+
+                <div class="step">
+                    <ul>
+                        <li><strong>HttpOverrides</strong> intercepts all <code>dart:io</code> HTTP traffic (package:http, etc.)</li>
+                        <li><strong>Dio Interceptor</strong> captures all Dio requests/responses</li>
+                        <li>Both use the same TCP socket protocol as the Android interceptor (port 9876)</li>
+                        <li>All modes work: Recording, Debug, Mockk, Mockk+Debug</li>
+                        <li>Request deduplication prevents duplicates from multiple HTTP clients</li>
+                    </ul>
+                </div>
+
                 <br/><br/>
                 <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.5.0 | Fully Automatic Setup | Built for Android Development
+                    MockkHttp v1.5.2 | Android &amp; Flutter | Built for Mobile Development
                 </p>
             </body>
             </html>

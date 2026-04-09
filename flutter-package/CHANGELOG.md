@@ -1,3 +1,7 @@
+## 1.5.2
+
+- Fix: HTTP response body now returns `Uint8List` instead of `List<int>`, fixing compatibility with `package:http` and other libraries that cast response bytes
+
 ## 1.5.1
 
 - Removed `host` parameter from `MockkHttp.init()` and `MockkHttpDioInterceptor()` — host is always auto-detected (10.0.2.2 for Android emulator)
