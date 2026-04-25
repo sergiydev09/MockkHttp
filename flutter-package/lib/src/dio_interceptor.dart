@@ -93,9 +93,22 @@ class MockkHttpDioInterceptor extends Interceptor {
 
     // In MOCKK mode with a mock available, return mock directly
     if (pluginMode == 'MOCKK' && mockCheck?.hasMock == true) {
+      final mock = mockCheck!;
+      // Send flow async so the mocked call appears in Inspector
+      final duration = DateTime.now().millisecondsSinceEpoch -
+          (options.extra['_mockk_start_time'] as int);
+      final flow = _core.buildFlowData(
+        request: requestData,
+        statusCode: mock.statusCode ?? 200,
+        responseHeaders: mock.headers ?? {},
+        responseBody: mock.body ?? '',
+        durationMs: duration,
+      );
+      _core.client.sendFlowAsync(flow);
+
       _core.markRequestCompleted(method, uri);
       handler.resolve(
-        _buildMockResponse(options, mockCheck!),
+        _buildMockResponse(options, mock),
         true,
       );
       return;

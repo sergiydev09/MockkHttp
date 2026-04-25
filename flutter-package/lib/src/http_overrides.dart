@@ -219,14 +219,31 @@ class _MockkHttpClientRequest implements HttpClientRequest {
 
     switch (pluginMode) {
       case 'MOCKK':
+        _BufferedResponse buffered;
         if (mockCheck?.hasMock == true) {
-          _core.markRequestCompleted(method, uri);
-          return _MockkHttpClientResponse.fromMock(mockCheck!);
+          buffered = _BufferedResponse.fromMock(mockCheck!);
+        } else {
+          buffered = await _bufferResponse(await _inner.close());
         }
-        // No mock — proceed with real request, no body capture needed
-        final response = await _inner.close();
+        final duration = DateTime.now().millisecondsSinceEpoch - startTime;
+
+        // Send flow async so it appears in Inspector (mocked or not)
+        final flow = _core.buildFlowData(
+          request: requestData,
+          statusCode: buffered.statusCode,
+          responseHeaders: buffered.headers,
+          responseBody: buffered.bodyString,
+          durationMs: duration,
+        );
+        _core.client.sendFlowAsync(flow);
         _core.markRequestCompleted(method, uri);
-        return response;
+
+        return _MockkHttpClientResponse(
+          statusCode: buffered.statusCode,
+          bodyBytes: buffered.bodyBytes,
+          headers: buffered.headers,
+          originalResponse: buffered.original,
+        );
 
       case 'DEBUG':
       case 'MOCKK_DEBUG':
@@ -445,14 +462,6 @@ class _MockkHttpClientResponse extends Stream<List<int>>
   })  : _bodyBytes = bodyBytes,
         _headers = headers,
         _original = originalResponse;
-
-  factory _MockkHttpClientResponse.fromMock(MockCheckResponse mock) {
-    return _MockkHttpClientResponse(
-      statusCode: mock.statusCode ?? 200,
-      bodyBytes: Uint8List.fromList(utf8.encode(mock.body ?? '')),
-      headers: mock.headers ?? {},
-    );
-  }
 
   @override
   StreamSubscription<List<int>> listen(

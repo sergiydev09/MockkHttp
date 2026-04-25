@@ -1,3 +1,7 @@
+## 1.5.3
+
+- Fix: Calls in Mockk mode now appear in the plugin Inspector list (HttpOverrides + dio interceptors). Previously the mock was applied locally but the flow was never sent to the plugin.
+
 ## 1.5.2
 
 - Fix: HTTP response body now returns `Uint8List` instead of `List<int>`, fixing compatibility with `package:http` and other libraries that cast response bytes

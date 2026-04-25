@@ -265,16 +265,18 @@ class MockkHttpInterceptor @JvmOverloads constructor(
 
             "MOCKK" -> {
                 // MOCKK: Use mock if available (no network), NO dialog
+                val response: Response
                 if (mockCheckResponse?.hasMock == true) {
                     Log.d(TAG, "⚡ Mock available! Skipping network call, NO dialog")
-                    markRequestCompleted(request)
-                    buildMockResponse(request, mockCheckResponse)
+                    response = buildMockResponse(request, mockCheckResponse)
                 } else {
                     // No mock, make real call
-                    val response = chain.proceed(request)
-                    markRequestCompleted(request)
-                    response
+                    response = chain.proceed(request)
                 }
+                val duration = System.currentTimeMillis() - startTime
+                sendToPluginAsync(request, response, duration)
+                markRequestCompleted(request)
+                response
             }
 
             "MOCKK_DEBUG" -> {
