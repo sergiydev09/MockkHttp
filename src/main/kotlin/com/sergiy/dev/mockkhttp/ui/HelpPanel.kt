@@ -108,9 +108,9 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                 <h1>🚀 MockkHttp Setup Guide</h1>
 
                 <div class="note">
-                    <strong>⚠️ IMPORTANT - Version 1.5.4 Stable Release</strong>
+                    <strong>⚠️ IMPORTANT - Version 1.5.5 Stable Release</strong>
                     <p>
-                        This version (1.5.4) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
+                        This version (1.5.5) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
                         Just apply the Gradle plugin and it handles everything.
                     </p>
                     <p>
@@ -293,7 +293,7 @@ dio.interceptors.add(MockkHttpDioInterceptor());</pre>
 
                 <br/><br/>
                 <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.5.4 | Android &amp; Flutter | Built for Mobile Development
+                    MockkHttp v1.5.5 | Android &amp; Flutter | Built for Mobile Development
                 </p>
             </body>
             </html>

@@ -11,9 +11,11 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
+import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import com.sergiy.dev.mockkhttp.model.ModifiedResponseData
+import com.sergiy.dev.mockkhttp.store.MockkRulesStore
 import java.awt.*
 import java.awt.event.KeyEvent
 import javax.swing.*
@@ -52,6 +54,9 @@ class DebugInterceptDialog(
     // Track if response was modified
     private var responseModified = false
     private lateinit var continueModifiedAction: ContinueModifiedAction
+
+    // Feedback label for the saved-mock picker (null when there are no saved mocks)
+    private var mockAppliedLabel: JLabel? = null
 
     // Search functionality for Request panel
     private lateinit var requestTextArea: JTextArea
@@ -216,13 +221,153 @@ class DebugInterceptDialog(
         }
 
         panel.add(northPanel, BorderLayout.NORTH)
-        panel.add(scrollPane, BorderLayout.CENTER)
+
+        // If there are saved mocks, show a clickable picker below the request so the user can
+        // apply an existing mock to this intercepted call with a single click.
+        val centerContent: JComponent = if (mockkRulesStore.getAllRules().isEmpty()) {
+            scrollPane
+        } else {
+            JSplitPane(JSplitPane.VERTICAL_SPLIT, scrollPane, createMockPickerPanel()).apply {
+                resizeWeight = 0.55
+            }
+        }
+        panel.add(centerContent, BorderLayout.CENTER)
 
         // Register Cmd+F / Ctrl+F to show search
         registerRequestFindShortcut(panel)
 
         return panel
     }
+
+    // ========== Saved-mock picker ==========
+
+    /**
+     * Whether a saved rule targets the same call being intercepted (method + host + path).
+     * Query params are ignored for this highlight; it only drives sorting/emphasis, not behavior.
+     */
+    private fun ruleMatchesCall(rule: MockkRulesStore.MockkRule): Boolean {
+        return rule.method.equals(flow.request.method, ignoreCase = true) &&
+                rule.host.equals(flow.request.host, ignoreCase = true) &&
+                rule.path == flow.request.path
+    }
+
+    /**
+     * Apply a saved mock's response into the editable response fields. This marks the response as
+     * modified (via the document listeners), enabling "Continue with Modified Response".
+     */
+    private fun applyMock(rule: MockkRulesStore.MockkRule) {
+        statusCodeField.text = rule.statusCode.toString()
+        headersTextArea.text = formatHeaders(rule.headers)
+        bodyTextArea.text = formatJsonIfPossible(rule.content)
+        mockAppliedLabel?.apply {
+            text = "✓ Applied: ${rule.name}  (${rule.method} ${rule.path} → ${rule.statusCode})"
+            foreground = JBColor(0x2E7D32, 0x81C784)
+        }
+        logger.info("Applied saved mock '${rule.name}' to intercepted response")
+    }
+
+    /** Apply a mock and immediately forward it to the app (closes the dialog). */
+    private fun applyMockAndSend(rule: MockkRulesStore.MockkRule) {
+        applyMock(rule)
+        actionTaken = ActionType.CONTINUE_MODIFIED
+        close(OK_EXIT_CODE)
+    }
+
+    /**
+     * Grouped list of saved mocks. Each mock row carries two inline icon buttons — Apply (load into
+     * the response) and Apply & Send (load + forward to the app) — so the developer acts directly
+     * on a row without a select-then-button step. Built as a plain panel so the per-row buttons are
+     * real, directly-clickable controls.
+     */
+    private fun createMockPickerPanel(): JComponent {
+        val panel = JPanel(BorderLayout())
+        panel.border = BorderFactory.createTitledBorder("🎭 Apply a saved mock")
+
+        val listPanel = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+
+        mockkRulesStore.getAllCollections()
+            .map { collection -> collection to mockkRulesStore.getRulesInCollection(collection.id) }
+            .filter { (_, rules) -> rules.isNotEmpty() }
+            .sortedByDescending { (_, rules) -> rules.count { ruleMatchesCall(it) } }
+            .forEach { (collection, rules) ->
+                listPanel.add(createCollectionHeader(collection, rules.size, rules.count { ruleMatchesCall(it) }))
+                rules.sortedByDescending { ruleMatchesCall(it) }.forEach { rule ->
+                    listPanel.add(createMockRow(rule))
+                }
+            }
+        listPanel.add(Box.createVerticalGlue())
+
+        val hint = JLabel("Each mock: ⧉ Apply (edit first) · ▶ Apply & Send · bold = matches this call").apply {
+            font = font.deriveFont(Font.PLAIN, 11f)
+            foreground = JBColor.GRAY
+            border = JBUI.Borders.empty(2, 6)
+        }
+        val appliedLabel = JLabel(" ").apply { border = JBUI.Borders.empty(3, 6) }
+        mockAppliedLabel = appliedLabel
+
+        panel.add(hint, BorderLayout.NORTH)
+        panel.add(JBScrollPane(listPanel), BorderLayout.CENTER)
+        panel.add(appliedLabel, BorderLayout.SOUTH)
+        return panel
+    }
+
+    private fun createCollectionHeader(
+        collection: com.sergiy.dev.mockkhttp.model.MockkCollection,
+        total: Int,
+        matchCount: Int
+    ): JComponent {
+        val text = buildString {
+            append(collection.name)
+            append("   $total mock${if (total == 1) "" else "s"}")
+            if (matchCount > 0) append("  · $matchCount for this call")
+        }
+        val label = JLabel(text, AllIcons.Nodes.Folder, SwingConstants.LEFT).apply {
+            font = font.deriveFont(Font.BOLD)
+        }
+        return JPanel(BorderLayout()).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(6, 4, 2, 4)
+            add(label, BorderLayout.WEST)
+            maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+        }
+    }
+
+    private fun createMockRow(rule: MockkRulesStore.MockkRule): JComponent {
+        val matches = ruleMatchesCall(rule)
+
+        val label = JLabel("${rule.method}  ${rule.name}  → ${rule.statusCode}").apply {
+            if (matches) {
+                font = font.deriveFont(Font.BOLD)
+                icon = AllIcons.Actions.Checked
+            }
+        }
+
+        val buttons = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0)).apply {
+            isOpaque = false
+            add(iconActionButton(AllIcons.Actions.MenuPaste, "Apply: load into the response (edit, then send with Continue)") {
+                applyMock(rule)
+            })
+            add(iconActionButton(AllIcons.Actions.Execute, "Apply & Send: forward this mock to the app now") {
+                applyMockAndSend(rule)
+            })
+        }
+
+        return JPanel(BorderLayout()).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(1, 18, 1, 4)
+            add(label, BorderLayout.CENTER)
+            add(buttons, BorderLayout.EAST)
+            maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+        }
+    }
+
+    private fun iconActionButton(icon: Icon, tooltip: String, action: () -> Unit): JButton =
+        JButton(icon).apply {
+            toolTipText = tooltip
+            isFocusable = false
+            margin = JBUI.insets(2)
+            addActionListener { action() }
+        }
 
     /**
      * Copy toolbar for the read-only request panel.

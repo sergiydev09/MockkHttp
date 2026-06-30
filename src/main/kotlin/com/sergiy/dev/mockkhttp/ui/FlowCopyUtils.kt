@@ -5,7 +5,9 @@ import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import java.awt.datatransfer.StringSelection
+import javax.swing.Icon
 import javax.swing.JButton
+import javax.swing.Timer
 
 /**
  * Shared helpers for copying flow data (or fragments of it) to the system clipboard,
@@ -126,24 +128,61 @@ object FlowCopyUtils {
     private fun shellQuote(value: String): String =
         "'" + value.replace("'", "'\\''") + "'"
 
+    private val copyIcon: Icon = AllIcons.Actions.Copy
+    private val copiedIcon: Icon = AllIcons.Actions.Checked
+    private const val FEEDBACK_PROPERTY = "mockkhttp.copyFeedbackTimer"
+    private const val FEEDBACK_DURATION_MS = 1100
+
     /**
      * A labeled copy button (icon + text) for toolbars.
      */
-    fun createCopyButton(label: String, tooltip: String, supplier: () -> String): JButton =
-        JButton(label, AllIcons.Actions.Copy).apply {
+    fun createCopyButton(label: String, tooltip: String, supplier: () -> String): JButton {
+        val button = JButton(label, copyIcon).apply {
             toolTipText = tooltip
             isFocusable = false
-            addActionListener { copyToClipboard(supplier()) }
         }
+        button.addActionListener {
+            copyToClipboard(supplier())
+            flashCopied(button, label, copyIcon)
+        }
+        return button
+    }
 
     /**
      * A compact, icon-only copy button for inline fragment rows (next to a header/body label).
      */
-    fun createCompactCopyButton(tooltip: String, supplier: () -> String): JButton =
-        JButton(AllIcons.Actions.Copy).apply {
+    fun createCompactCopyButton(tooltip: String, supplier: () -> String): JButton {
+        val button = JButton(copyIcon).apply {
             toolTipText = tooltip
             isFocusable = false
             margin = JBUI.insets(2)
-            addActionListener { copyToClipboard(supplier()) }
         }
+        button.addActionListener {
+            copyToClipboard(supplier())
+            flashCopied(button, null, copyIcon)
+        }
+        return button
+    }
+
+    /**
+     * Briefly show a "copied" confirmation on the button (green check, plus "Copied!" text on
+     * labeled buttons), then revert. Runs on the EDT via a one-shot [Timer]; rapid clicks cancel
+     * the pending revert so the feedback always resets cleanly.
+     */
+    private fun flashCopied(button: JButton, originalText: String?, originalIcon: Icon) {
+        (button.getClientProperty(FEEDBACK_PROPERTY) as? Timer)?.stop()
+
+        if (!originalText.isNullOrEmpty()) {
+            button.text = "Copied!"
+        }
+        button.icon = copiedIcon
+
+        val timer = Timer(FEEDBACK_DURATION_MS) {
+            button.text = originalText
+            button.icon = originalIcon
+        }
+        timer.isRepeats = false
+        button.putClientProperty(FEEDBACK_PROPERTY, timer)
+        timer.start()
+    }
 }

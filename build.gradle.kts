@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.5.4"
+version = "1.5.5"
 
 repositories {
     mavenCentral()
@@ -56,6 +56,12 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>Version 1.5.5 - Copy Feedback & Quick Mock Apply</h3>
+            <ul>
+                <li><strong>📋 Copy Feedback:</strong> Every copy button now confirms the action with a green check and a brief "Copied!" label</li>
+                <li><strong>🎭 Quick Mock Apply (Debug):</strong> When a call is paused in Debug mode, a list of saved mocks (grouped by collection) appears. Each row has two inline buttons — Apply (load into the response) and Apply &amp; Send (forward to the app instantly). Mocks matching the call are highlighted and listed first.</li>
+            </ul>
+
             <h3>Version 1.5.4 - Request Bodies & Copy Buttons</h3>
             <ul>
                 <li><strong>📦 Request Body Capture:</strong> POST/PUT request bodies are now captured and shown in the Inspector (read directly from the OkHttp application interceptor)</li>
