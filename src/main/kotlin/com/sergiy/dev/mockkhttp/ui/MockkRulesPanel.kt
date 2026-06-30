@@ -201,11 +201,40 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                 toolTipText = "Toggle enabled state"
                 addActionListener { toggleSelected() }
             })
+            add(JSeparator(SwingConstants.VERTICAL))
+            add(JButton("Delete All", AllIcons.Actions.GC).apply {
+                toolTipText = "Delete ALL collections and their rules (useful after a duplicate import)"
+                addActionListener { deleteAllCollections() }
+            })
         }
 
         toolbar.add(row1)
         toolbar.add(row2)
         return toolbar
+    }
+
+    /**
+     * Delete every collection and rule after explicit confirmation. Handy to clean up when an
+     * import has duplicated many collections.
+     */
+    private fun deleteAllCollections() {
+        val collectionCount = mockkRulesStore.getAllCollections().size
+        if (collectionCount == 0) {
+            Messages.showInfoMessage(this, "There are no collections to delete.", "Nothing to Delete")
+            return
+        }
+        val ruleCount = mockkRulesStore.getAllRules().size
+        val result = Messages.showYesNoDialog(
+            this,
+            "Delete ALL $collectionCount collection(s) and $ruleCount mock rule(s)?\nThis cannot be undone.",
+            "Delete All Collections",
+            Messages.getWarningIcon()
+        )
+        if (result == Messages.YES) {
+            val (removedCollections, removedRules) = mockkRulesStore.removeAllCollections()
+            loadTreeData()
+            logger.info("🗑️ Deleted all collections ($removedCollections) and rules ($removedRules)")
+        }
     }
 
     /**

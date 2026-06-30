@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.5.5"
+version = "1.5.6"
 
 repositories {
     mavenCentral()
@@ -56,6 +56,14 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>Version 1.5.6 - Mock Picker Fixes</h3>
+            <ul>
+                <li><strong>🎯 Endpoint-scoped:</strong> The Debug mock picker now lists only mocks that match the intercepted call — no mocks from other endpoints or collections</li>
+                <li><strong>🧱 Layout fix:</strong> The Apply / Apply &amp; Send buttons are always visible (no horizontal scrolling); long mock names truncate instead</li>
+                <li><strong>✅ Button feedback:</strong> The per-mock Apply / Apply &amp; Send buttons now flash a check when clicked</li>
+                <li><strong>🗑️ Delete All Collections:</strong> New toolbar button to remove every collection and rule at once (handy after a duplicate import)</li>
+            </ul>
+
             <h3>Version 1.5.5 - Copy Feedback & Quick Mock Apply</h3>
             <ul>
                 <li><strong>📋 Copy Feedback:</strong> Every copy button now confirms the action with a green check and a brief "Copied!" label</li>

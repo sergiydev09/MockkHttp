@@ -167,6 +167,19 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
     }
 
     /**
+     * Remove ALL collections and their rules. Useful to recover from accidental duplicate imports.
+     * Returns the number of collections and rules removed.
+     */
+    fun removeAllCollections(): Pair<Int, Int> {
+        val removedCollections = collections.size
+        val removedRules = rules.size
+        collections.clear()
+        rules.clear()
+        logger.info("🗑️ Removed ALL collections ($removedCollections) and rules ($removedRules)")
+        return removedCollections to removedRules
+    }
+
+    /**
      * Remove a collection and optionally its rules.
      */
     fun removeCollection(collection: com.sergiy.dev.mockkhttp.model.MockkCollection, removeRules: Boolean = true) {

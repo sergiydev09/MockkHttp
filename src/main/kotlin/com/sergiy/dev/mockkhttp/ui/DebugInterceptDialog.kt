@@ -222,12 +222,14 @@ class DebugInterceptDialog(
 
         panel.add(northPanel, BorderLayout.NORTH)
 
-        // If there are saved mocks, show a clickable picker below the request so the user can
-        // apply an existing mock to this intercepted call with a single click.
-        val centerContent: JComponent = if (mockkRulesStore.getAllRules().isEmpty()) {
+        // Show a picker of saved mocks that target THIS exact call (method + host + path), grouped
+        // by collection, so the developer can apply one directly. Mocks for other endpoints or
+        // collections are intentionally not shown.
+        val matching = matchingMocksByCollection()
+        val centerContent: JComponent = if (matching.isEmpty()) {
             scrollPane
         } else {
-            JSplitPane(JSplitPane.VERTICAL_SPLIT, scrollPane, createMockPickerPanel()).apply {
+            JSplitPane(JSplitPane.VERTICAL_SPLIT, scrollPane, createMockPickerPanel(matching)).apply {
                 resizeWeight = 0.55
             }
         }
@@ -242,14 +244,20 @@ class DebugInterceptDialog(
     // ========== Saved-mock picker ==========
 
     /**
-     * Whether a saved rule targets the same call being intercepted (method + host + path).
-     * Query params are ignored for this highlight; it only drives sorting/emphasis, not behavior.
+     * Whether a saved rule targets the exact call being intercepted (method + host + path).
+     * Query params are ignored so mocks created from a slightly different query still surface.
      */
     private fun ruleMatchesCall(rule: MockkRulesStore.MockkRule): Boolean {
         return rule.method.equals(flow.request.method, ignoreCase = true) &&
                 rule.host.equals(flow.request.host, ignoreCase = true) &&
                 rule.path == flow.request.path
     }
+
+    /** Saved mocks that target this exact call (method + host + path), grouped by collection. */
+    private fun matchingMocksByCollection(): List<Pair<com.sergiy.dev.mockkhttp.model.MockkCollection, List<MockkRulesStore.MockkRule>>> =
+        mockkRulesStore.getAllCollections()
+            .map { collection -> collection to mockkRulesStore.getRulesInCollection(collection.id).filter { ruleMatchesCall(it) } }
+            .filter { (_, rules) -> rules.isNotEmpty() }
 
     /**
      * Apply a saved mock's response into the editable response fields. This marks the response as
@@ -274,30 +282,33 @@ class DebugInterceptDialog(
     }
 
     /**
-     * Grouped list of saved mocks. Each mock row carries two inline icon buttons — Apply (load into
-     * the response) and Apply & Send (load + forward to the app) — so the developer acts directly
-     * on a row without a select-then-button step. Built as a plain panel so the per-row buttons are
-     * real, directly-clickable controls.
+     * Grouped list of the saved mocks that match this call. Each mock row carries two inline icon
+     * buttons — Apply (load into the response) and Apply & Send (load + forward to the app).
      */
-    private fun createMockPickerPanel(): JComponent {
+    private fun createMockPickerPanel(
+        groups: List<Pair<com.sergiy.dev.mockkhttp.model.MockkCollection, List<MockkRulesStore.MockkRule>>>
+    ): JComponent {
         val panel = JPanel(BorderLayout())
-        panel.border = BorderFactory.createTitledBorder("🎭 Apply a saved mock")
+        panel.border = BorderFactory.createTitledBorder("🎭 Saved mocks for this call")
 
-        val listPanel = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+        // A panel that tracks the viewport width so rows never overflow horizontally: the action
+        // buttons on the right edge stay visible and the mock name truncates instead.
+        val listPanel = object : JPanel(), Scrollable {
+            override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+            override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = 16
+            override fun getScrollableBlockIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = visibleRect.height
+            override fun getScrollableTracksViewportWidth(): Boolean = true
+            override fun getScrollableTracksViewportHeight(): Boolean = false
+        }
+        listPanel.layout = BoxLayout(listPanel, BoxLayout.Y_AXIS)
 
-        mockkRulesStore.getAllCollections()
-            .map { collection -> collection to mockkRulesStore.getRulesInCollection(collection.id) }
-            .filter { (_, rules) -> rules.isNotEmpty() }
-            .sortedByDescending { (_, rules) -> rules.count { ruleMatchesCall(it) } }
-            .forEach { (collection, rules) ->
-                listPanel.add(createCollectionHeader(collection, rules.size, rules.count { ruleMatchesCall(it) }))
-                rules.sortedByDescending { ruleMatchesCall(it) }.forEach { rule ->
-                    listPanel.add(createMockRow(rule))
-                }
-            }
+        groups.forEach { (collection, rules) ->
+            listPanel.add(createCollectionHeader(collection, rules.size))
+            rules.forEach { rule -> listPanel.add(createMockRow(rule)) }
+        }
         listPanel.add(Box.createVerticalGlue())
 
-        val hint = JLabel("Each mock: ⧉ Apply (edit first) · ▶ Apply & Send · bold = matches this call").apply {
+        val hint = JLabel("⧉ Apply (load into response) · ▶ Apply & Send (forward to app)").apply {
             font = font.deriveFont(Font.PLAIN, 11f)
             foreground = JBColor.GRAY
             border = JBUI.Borders.empty(2, 6)
@@ -306,24 +317,19 @@ class DebugInterceptDialog(
         mockAppliedLabel = appliedLabel
 
         panel.add(hint, BorderLayout.NORTH)
-        panel.add(JBScrollPane(listPanel), BorderLayout.CENTER)
+        panel.add(JBScrollPane(listPanel).apply {
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        }, BorderLayout.CENTER)
         panel.add(appliedLabel, BorderLayout.SOUTH)
         return panel
     }
 
-    private fun createCollectionHeader(
-        collection: com.sergiy.dev.mockkhttp.model.MockkCollection,
-        total: Int,
-        matchCount: Int
-    ): JComponent {
-        val text = buildString {
-            append(collection.name)
-            append("   $total mock${if (total == 1) "" else "s"}")
-            if (matchCount > 0) append("  · $matchCount for this call")
-        }
-        val label = JLabel(text, AllIcons.Nodes.Folder, SwingConstants.LEFT).apply {
-            font = font.deriveFont(Font.BOLD)
-        }
+    private fun createCollectionHeader(collection: com.sergiy.dev.mockkhttp.model.MockkCollection, count: Int): JComponent {
+        val label = JLabel(
+            "${collection.name}   $count mock${if (count == 1) "" else "s"}",
+            AllIcons.Nodes.Folder,
+            SwingConstants.LEFT
+        ).apply { font = font.deriveFont(Font.BOLD) }
         return JPanel(BorderLayout()).apply {
             alignmentX = Component.LEFT_ALIGNMENT
             border = JBUI.Borders.empty(6, 4, 2, 4)
@@ -333,14 +339,7 @@ class DebugInterceptDialog(
     }
 
     private fun createMockRow(rule: MockkRulesStore.MockkRule): JComponent {
-        val matches = ruleMatchesCall(rule)
-
-        val label = JLabel("${rule.method}  ${rule.name}  → ${rule.statusCode}").apply {
-            if (matches) {
-                font = font.deriveFont(Font.BOLD)
-                icon = AllIcons.Actions.Checked
-            }
-        }
+        val label = JLabel("${rule.method}  ${rule.name}  → ${rule.statusCode}")
 
         val buttons = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0)).apply {
             isOpaque = false
@@ -361,13 +360,28 @@ class DebugInterceptDialog(
         }
     }
 
-    private fun iconActionButton(icon: Icon, tooltip: String, action: () -> Unit): JButton =
-        JButton(icon).apply {
+    private fun iconActionButton(icon: Icon, tooltip: String, action: () -> Unit): JButton {
+        val button = JButton(icon).apply {
             toolTipText = tooltip
             isFocusable = false
             margin = JBUI.insets(2)
-            addActionListener { action() }
         }
+        button.addActionListener {
+            action()
+            flashApplied(button, icon)
+        }
+        return button
+    }
+
+    /** Briefly swap a button's icon to a green check as click feedback, then revert. */
+    private fun flashApplied(button: JButton, originalIcon: Icon) {
+        (button.getClientProperty("flashTimer") as? javax.swing.Timer)?.stop()
+        button.icon = AllIcons.Actions.Checked
+        val timer = javax.swing.Timer(900) { button.icon = originalIcon }
+        timer.isRepeats = false
+        button.putClientProperty("flashTimer", timer)
+        timer.start()
+    }
 
     /**
      * Copy toolbar for the read-only request panel.
