@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.5.3"
+version = "1.5.4"
 
 repositories {
     mavenCentral()
@@ -34,9 +34,10 @@ dependencies {
     // JSON parsing
     implementation("com.google.code.gson:gson:2.13.2")
 
-    // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
+    // NOTE: Kotlin Coroutines are intentionally NOT declared here.
+    // They are bundled with the IntelliJ Platform and adding them explicitly causes
+    // version conflicts / runtime errors flagged by verifyPluginProjectConfiguration.
+    // See: https://jb.gg/intellij-platform-kotlin-coroutines
 }
 
 intellijPlatform {
@@ -46,10 +47,22 @@ intellijPlatform {
 
     pluginConfiguration {
         ideaVersion {
-            sinceBuild = "241"
+            // Built against IntelliJ Platform 2024.3 with Java 21 bytecode (requires JBR 21),
+            // so the honest minimum is 243. Must not be lower than the target platform major.
+            sinceBuild = "243"
+            // Leave the upper bound open so each new IDE release does not mark the plugin as
+            // incompatible. Required for 2024.3+ by verifyPluginProjectConfiguration.
+            untilBuild = provider { null }
         }
 
         changeNotes = """
+            <h3>Version 1.5.4 - Request Bodies & Copy Buttons</h3>
+            <ul>
+                <li><strong>📦 Request Body Capture:</strong> POST/PUT request bodies are now captured and shown in the Inspector (read directly from the OkHttp application interceptor)</li>
+                <li><strong>📋 Copy Buttons:</strong> Copy fragments (URL, headers, body) or the whole request/response/both, plus "Copy as cURL", from the flow details and Debug dialogs</li>
+                <li><strong>🧩 Compatibility:</strong> Cleaned up plugin configuration flagged by JetBrains (open until-build, aligned since-build, platform-provided coroutines)</li>
+            </ul>
+
             <h3>Version 1.5.3 - Mockk Mode Inspector Fix</h3>
             <ul>
                 <li><strong>🐛 CRITICAL FIX:</strong> Calls in Mockk mode now appear in the Inspector list (Android library + Flutter package)</li>
@@ -202,7 +215,7 @@ intellijPlatform {
 
             <h3>Setup (It's This Simple!)</h3>
             <ul>
-                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.5.3"</code> to plugins block</li>
+                <li><strong>Step 1:</strong> Add <code>id("io.github.sergiydev09.mockkhttp") version "1.5.4"</code> to plugins block</li>
                 <li><strong>Step 2:</strong> That's it! No repository configuration needed</li>
                 <li><strong>⚠️ DO NOT:</strong> Add <code>debugImplementation</code> manually - the plugin does it for you!</li>
             </ul>
@@ -224,7 +237,7 @@ intellijPlatform {
                 <li>Android SDK with platform-tools (ADB)</li>
                 <li>Android emulator or physical device (API 21+)</li>
                 <li>App must use OkHttp (Retrofit uses OkHttp internally)</li>
-                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.5.3"</code></li>
+                <li><strong>Gradle plugin:</strong> <code>id("io.github.sergiydev09.mockkhttp") version "1.5.4"</code></li>
             </ul>
         """.trimIndent()
     }

@@ -8,6 +8,9 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
+import okio.Sink
+import okio.Timeout
+import okio.buffer
 import java.io.IOException
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -46,6 +49,7 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         private const val PING_TIMEOUT_MS = 500    // Fast ping timeout
         private const val PING_CACHE_DURATION_MS = 5000  // Cache ping result for 5s
         private const val DEDUP_WINDOW_MS = 500  // 500ms window to detect duplicate requests
+        private const val MAX_REQUEST_BODY_SIZE = 5L * 1024 * 1024  // 5MB cap, mirrors the response cap
 
         /**
          * Enable/disable interceptor globally.
@@ -515,6 +519,80 @@ class MockkHttpInterceptor @JvmOverloads constructor(
     }
 
     /**
+     * Read the request body as text when it is safe to do so.
+     *
+     * Because this is an application interceptor, the body has not been transmitted yet, so
+     * buffering it here does NOT consume it for the real network call. One-shot and duplex
+     * bodies are skipped (reading them would consume the only available stream), and clearly
+     * binary payloads are reported as a placeholder instead of garbage text.
+     */
+    private fun readRequestBody(request: Request): String {
+        val body = request.body ?: return ""
+        return try {
+            if (body.isDuplex() || body.isOneShot()) {
+                return ""  // Cannot be read without consuming the stream
+            }
+
+            // Buffer through a size-bounded Sink so a large upload (file/multipart) cannot be
+            // fully materialized in memory and OOM the device. Memory stays capped even when
+            // the body has an unknown content length. Mirrors the 5MB cap on the response side.
+            val collector = Buffer()
+            try {
+                val boundedSink = object : Sink {
+                    override fun write(source: Buffer, byteCount: Long) {
+                        if (collector.size + byteCount > MAX_REQUEST_BODY_SIZE) {
+                            throw BodyTooLargeException()
+                        }
+                        collector.write(source, byteCount)
+                    }
+                    override fun flush() {}
+                    override fun timeout(): Timeout = Timeout.NONE
+                    override fun close() {}
+                }
+                boundedSink.buffer().use { sink ->
+                    body.writeTo(sink)
+                }
+            } catch (e: BodyTooLargeException) {
+                val size = try { body.contentLength() } catch (ex: Exception) { -1L }
+                return if (size >= 0) "<body too large to capture: $size bytes>" else "<body too large to capture>"
+            }
+
+            if (!collector.isProbablyUtf8()) {
+                val size = try { body.contentLength() } catch (e: Exception) { collector.size }
+                return if (size >= 0) "<binary body: $size bytes>" else "<binary body>"
+            }
+
+            val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+            collector.readString(charset)
+        } catch (e: Exception) {
+            Log.d(TAG, "Could not read request body: ${e.message}")
+            ""
+        }
+    }
+
+    /**
+     * Heuristic to detect whether a buffer holds UTF-8 text (mirrors OkHttp's logging interceptor).
+     * Inspects the first 16 characters; non-whitespace control characters indicate binary content.
+     */
+    private fun Buffer.isProbablyUtf8(): Boolean {
+        return try {
+            val prefix = Buffer()
+            val byteCount = if (size < 64) size else 64
+            copyTo(prefix, 0, byteCount)
+            for (i in 0 until 16) {
+                if (prefix.exhausted()) break
+                val codePoint = prefix.readUtf8CodePoint()
+                if (Character.isISOControl(codePoint) && !Character.isWhitespace(codePoint)) {
+                    return false
+                }
+            }
+            true
+        } catch (e: Exception) {
+            false  // Truncated UTF-8 sequence or other decode error => treat as binary
+        }
+    }
+
+    /**
      * Serialize Request and Response to FlowData.
      */
     private fun serializeFlow(
@@ -522,15 +600,11 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         response: Response,
         duration: Long
     ): FlowData {
-        // Read request body safely (if available)
-        val requestBody = try {
-            // Request body is already consumed at this point, we can't read it
-            // This would require using a logging interceptor before this one
-            // For now, we'll just capture headers and URL
-            ""
-        } catch (e: Exception) {
-            ""
-        }
+        // Read request body safely.
+        // NOTE: This is injected as an APPLICATION interceptor (.addInterceptor), so at this
+        // point the body has NOT been sent yet and can be buffered without consuming it —
+        // OkHttp re-invokes RequestBody.writeTo() when it actually transmits the request.
+        val requestBody = readRequestBody(request)
 
         // Read response body safely without consuming it
         val responseBodyString = try {
@@ -627,3 +701,9 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         }
     }
 }
+
+/**
+ * Signals that a request body exceeded the maximum capture size while being buffered, so reading
+ * is aborted instead of materializing the whole payload in memory.
+ */
+private class BodyTooLargeException : IOException()

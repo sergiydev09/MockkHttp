@@ -176,7 +176,34 @@ class _MockkHttpClientRequest implements HttpClientRequest {
   final HttpClientRequest _inner;
   final MockkHttpCore _core;
 
+  // Captures request body bytes written via add/addStream/write* so the plugin
+  // can display POST/PUT payloads. Bounded to avoid OOM on large uploads.
+  static const int _maxRequestBodyBytes = 5 * 1024 * 1024;
+  final BytesBuilder _requestBody = BytesBuilder(copy: false);
+  bool _requestBodyTooLarge = false;
+
   _MockkHttpClientRequest(this._inner, this._core);
+
+  void _captureRequestBytes(List<int> data) {
+    if (!MockkHttpCore.isEnabled || _requestBodyTooLarge) return;
+    if (_requestBody.length + data.length > _maxRequestBodyBytes) {
+      _requestBodyTooLarge = true;
+      _requestBody.clear();
+      return;
+    }
+    _requestBody.add(data);
+  }
+
+  String _serializeRequestBody() {
+    if (_requestBodyTooLarge) return '<body too large to capture>';
+    final bytes = _requestBody.takeBytes();
+    if (bytes.isEmpty) return '';
+    try {
+      return utf8.decode(bytes);
+    } catch (_) {
+      return '<binary body: ${bytes.length} bytes>';
+    }
+  }
 
   @override
   Future<HttpClientResponse> close() async {
@@ -205,6 +232,7 @@ class _MockkHttpClientRequest implements HttpClientRequest {
       method,
       uri,
       requestHeaders,
+      body: _serializeRequestBody(),
     );
 
     // Check for mock
@@ -343,14 +371,23 @@ class _MockkHttpClientRequest implements HttpClientRequest {
       _inner.abort(exception, stackTrace);
 
   @override
-  void add(List<int> data) => _inner.add(data);
+  void add(List<int> data) {
+    _captureRequestBytes(data);
+    _inner.add(data);
+  }
 
   @override
   void addError(Object error, [StackTrace? stackTrace]) =>
       _inner.addError(error, stackTrace);
 
   @override
-  Future addStream(Stream<List<int>> stream) => _inner.addStream(stream);
+  Future addStream(Stream<List<int>> stream) {
+    // Tee the stream: capture each chunk while forwarding it to the real request.
+    return _inner.addStream(stream.map((chunk) {
+      _captureRequestBytes(chunk);
+      return chunk;
+    }));
+  }
 
   @override
   HttpConnectionInfo? get connectionInfo => _inner.connectionInfo;
@@ -374,17 +411,28 @@ class _MockkHttpClientRequest implements HttpClientRequest {
   Uri get uri => _inner.uri;
 
   @override
-  void write(Object? object) => _inner.write(object);
+  void write(Object? object) {
+    _captureRequestBytes(_inner.encoding.encode('$object'));
+    _inner.write(object);
+  }
 
   @override
-  void writeAll(Iterable objects, [String separator = '']) =>
-      _inner.writeAll(objects, separator);
+  void writeAll(Iterable objects, [String separator = '']) {
+    _captureRequestBytes(_inner.encoding.encode(objects.join(separator)));
+    _inner.writeAll(objects, separator);
+  }
 
   @override
-  void writeCharCode(int charCode) => _inner.writeCharCode(charCode);
+  void writeCharCode(int charCode) {
+    _captureRequestBytes(_inner.encoding.encode(String.fromCharCode(charCode)));
+    _inner.writeCharCode(charCode);
+  }
 
   @override
-  void writeln([Object? object = '']) => _inner.writeln(object);
+  void writeln([Object? object = '']) {
+    _captureRequestBytes(_inner.encoding.encode('$object\n'));
+    _inner.writeln(object);
+  }
 
   @override
   bool get bufferOutput => _inner.bufferOutput;

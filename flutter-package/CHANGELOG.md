@@ -1,3 +1,7 @@
+## 1.5.4
+
+- Feature: Capture the request body on the `HttpOverrides` path (`package:http` / raw `HttpClient`) so POST/PUT payloads are shown in the plugin Inspector. The `dio` interceptor already captured it. Bounded to 5MB; binary/oversized bodies show a placeholder.
+
 ## 1.5.3
 
 - Fix: Calls in Mockk mode now appear in the plugin Inspector list (HttpOverrides + dio interceptors). Previously the mock was applied locally but the flow was never sent to the plugin.

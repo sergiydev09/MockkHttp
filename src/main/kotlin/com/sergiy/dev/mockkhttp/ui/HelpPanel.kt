@@ -108,9 +108,9 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                 <h1>🚀 MockkHttp Setup Guide</h1>
 
                 <div class="note">
-                    <strong>⚠️ IMPORTANT - Version 1.5.3 Stable Release</strong>
+                    <strong>⚠️ IMPORTANT - Version 1.5.4 Stable Release</strong>
                     <p>
-                        This version (1.5.3) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
+                        This version (1.5.4) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
                         Just apply the Gradle plugin and it handles everything.
                     </p>
                     <p>
@@ -130,7 +130,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                     <pre>plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.5.3"
+    id("io.github.sergiydev09.mockkhttp") version "1.5.4"
 }
 
 // That's it! No dependencies needed.
@@ -232,7 +232,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                 <div class="step">
                     <p><strong>In your <code>pubspec.yaml</code>:</strong></p>
                     <pre>dev_dependencies:
-  mockk_http: ^1.5.3</pre>
+  mockk_http: ^1.5.4</pre>
                     <p><em>Using <code>dev_dependencies</code> ensures it won't be included in release builds.</em></p>
                 </div>
 
@@ -293,7 +293,7 @@ dio.interceptors.add(MockkHttpDioInterceptor());</pre>
 
                 <br/><br/>
                 <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.5.3 | Android &amp; Flutter | Built for Mobile Development
+                    MockkHttp v1.5.4 | Android &amp; Flutter | Built for Mobile Development
                 </p>
             </body>
             </html>

@@ -16,7 +16,8 @@ class AppManager(project: Project) {
 
     private val logger = MockkHttpLogger.getInstance(project)
     private val emulatorManager = EmulatorManager.getInstance(project)
-    
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     private val scanDispatcher = Dispatchers.IO.limitedParallelism(10)
 
     companion object {

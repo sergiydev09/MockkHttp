@@ -10,7 +10,7 @@ repositories {
 }
 
 group = "com.github.sergiydev09.MockkHttp"
-version = "1.5.3"
+version = "1.5.4"
 
 android {
     namespace = "com.sergiy.dev.mockkhttp.interceptor"
@@ -38,6 +38,12 @@ android {
 
     lint {
         abortOnError = false
+    }
+
+    // Configure the 'release' publication variant explicitly to avoid the
+    // "Android Publication 'release' Misconfigured" warning during configuration.
+    publishing {
+        singleVariant("release") {}
     }
 }
 

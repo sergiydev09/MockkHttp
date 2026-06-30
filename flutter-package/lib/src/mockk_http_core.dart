@@ -131,7 +131,7 @@ class MockkHttpCore {
 class MockkHttp {
   MockkHttp._();
 
-  static const String version = '1.5.3';
+  static const String version = '1.5.4';
 
   /// Initialize MockkHttp with global [HttpOverrides].
   ///

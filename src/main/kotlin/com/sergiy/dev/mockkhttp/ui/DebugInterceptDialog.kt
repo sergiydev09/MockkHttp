@@ -209,13 +209,57 @@ class DebugInterceptDialog(
 
         val scrollPane = JBScrollPane(requestTextArea)
 
-        panel.add(requestSearchPanel, BorderLayout.NORTH)
+        // North: always-visible copy toolbar on top, collapsible search below it
+        val northPanel = JPanel(BorderLayout()).apply {
+            add(createRequestCopyToolbar(), BorderLayout.NORTH)
+            add(requestSearchPanel, BorderLayout.SOUTH)
+        }
+
+        panel.add(northPanel, BorderLayout.NORTH)
         panel.add(scrollPane, BorderLayout.CENTER)
 
         // Register Cmd+F / Ctrl+F to show search
         registerRequestFindShortcut(panel)
 
         return panel
+    }
+
+    /**
+     * Copy toolbar for the read-only request panel.
+     */
+    private fun createRequestCopyToolbar(): JComponent {
+        val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 5, 3))
+        toolbar.add(JLabel("Copy:"))
+        toolbar.add(FlowCopyUtils.createCopyButton("Request", "Copy the full request (method, URL, headers, body)") {
+            FlowCopyUtils.buildRequestText(flow)
+        })
+        toolbar.add(FlowCopyUtils.createCopyButton("URL", "Copy the request URL") { flow.request.url })
+        if (flow.request.headers.isNotEmpty()) {
+            toolbar.add(FlowCopyUtils.createCopyButton("Headers", "Copy request headers") {
+                FlowCopyUtils.formatHeaders(flow.request.headers)
+            })
+        }
+        if (flow.request.content.isNotEmpty()) {
+            toolbar.add(FlowCopyUtils.createCopyButton("Body", "Copy request body") { flow.request.content })
+        }
+        toolbar.add(FlowCopyUtils.createCopyButton("cURL", "Copy the request as a cURL command") {
+            FlowCopyUtils.buildCurl(flow)
+        })
+        return toolbar
+    }
+
+    /**
+     * Copy toolbar for the editable response panel. Reads the live (possibly edited) field values.
+     */
+    private fun createResponseCopyToolbar(): JComponent {
+        val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 5, 3))
+        toolbar.add(JLabel("Copy:"))
+        toolbar.add(FlowCopyUtils.createCopyButton("Response", "Copy the current response (status, headers, body)") {
+            FlowCopyUtils.buildResponseText(statusCodeField.text, headersTextArea.text, bodyTextArea.text)
+        })
+        toolbar.add(FlowCopyUtils.createCopyButton("Headers", "Copy the current response headers") { headersTextArea.text })
+        toolbar.add(FlowCopyUtils.createCopyButton("Body", "Copy the current response body") { bodyTextArea.text })
+        return toolbar
     }
 
     /**
@@ -261,9 +305,13 @@ class DebugInterceptDialog(
         val splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, topPanel, bodyPanel)
         splitPane.resizeWeight = 0.3
 
-        // Create main content with search on top
+        // Create main content with copy toolbar + search on top
+        val northPanel = JPanel(BorderLayout()).apply {
+            add(createResponseCopyToolbar(), BorderLayout.NORTH)
+            add(responseSearchPanel, BorderLayout.SOUTH)
+        }
         val contentPanel = JPanel(BorderLayout())
-        contentPanel.add(responseSearchPanel, BorderLayout.NORTH)
+        contentPanel.add(northPanel, BorderLayout.NORTH)
         contentPanel.add(splitPane, BorderLayout.CENTER)
 
         panel.add(contentPanel, BorderLayout.CENTER)

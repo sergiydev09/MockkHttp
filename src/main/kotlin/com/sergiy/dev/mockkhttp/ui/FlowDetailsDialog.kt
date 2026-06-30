@@ -12,7 +12,9 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import java.awt.BorderLayout
+import java.awt.Component
 import java.awt.Dimension
+import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.event.KeyEvent
 import javax.swing.*
@@ -51,10 +53,11 @@ class FlowDetailsDialog(
         searchPanel = createSearchPanel()
         searchPanel.isVisible = false
 
-        // Create top panel with search + mock banner
+        // Create top panel with search + copy toolbar + mock banner
         val topPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             add(searchPanel)
+            add(createCopyToolbar())
             if (flow.mockApplied) {
                 add(createMockBanner())
             }
@@ -117,6 +120,49 @@ class FlowDetailsDialog(
         }
     }
 
+    /**
+     * Always-visible toolbar with whole-request / whole-response / both / cURL copy actions.
+     */
+    private fun createCopyToolbar(): JComponent {
+        val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 5, 3)).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+
+        toolbar.add(JLabel("Copy:"))
+        toolbar.add(FlowCopyUtils.createCopyButton("Request", "Copy the full request (method, URL, headers, body)") {
+            FlowCopyUtils.buildRequestText(flow)
+        })
+        if (flow.response != null) {
+            toolbar.add(FlowCopyUtils.createCopyButton("Response", "Copy the full response (status, headers, body)") {
+                FlowCopyUtils.buildResponseText(flow)
+            })
+            toolbar.add(FlowCopyUtils.createCopyButton("Both", "Copy request and response together") {
+                FlowCopyUtils.buildFullFlowText(flow)
+            })
+        }
+        toolbar.add(FlowCopyUtils.createCopyButton("cURL", "Copy the request as a cURL command") {
+            FlowCopyUtils.buildCurl(flow)
+        })
+
+        toolbar.maximumSize = Dimension(Int.MAX_VALUE, toolbar.preferredSize.height)
+        return toolbar
+    }
+
+    /**
+     * Wrap a label with a compact, inline copy button for a single fragment (URL, headers, body).
+     */
+    private fun labelWithCopy(label: JLabel, tooltip: String, supplier: () -> String): JPanel {
+        return JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            alignmentX = Component.LEFT_ALIGNMENT
+            add(label)
+            add(Box.createHorizontalStrut(8))
+            add(FlowCopyUtils.createCompactCopyButton(tooltip, supplier))
+            add(Box.createHorizontalGlue())
+            maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+        }
+    }
+
     private fun createInfoPanel(): JPanel {
         val panel = JPanel()
         panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
@@ -147,14 +193,15 @@ class FlowDetailsDialog(
         })
 
         // URL
-        panel.add(createLabel("URL: ${flow.request.url}"))
+        panel.add(labelWithCopy(createLabel("URL: ${flow.request.url}"), "Copy URL") { flow.request.url })
         panel.add(Box.createVerticalStrut(10))
 
         // Headers - as normal labels, not textarea
         if (flow.request.headers.isNotEmpty()) {
-            panel.add(createLabel("Headers (${flow.request.headers.size}):").apply {
-                font = font.deriveFont(Font.BOLD)
-            })
+            panel.add(labelWithCopy(
+                createLabel("Headers (${flow.request.headers.size}):").apply { font = font.deriveFont(Font.BOLD) },
+                "Copy request headers"
+            ) { FlowCopyUtils.formatHeaders(flow.request.headers) })
             panel.add(Box.createVerticalStrut(5))
             flow.request.headers.forEach { (key, value) ->
                 panel.add(createLabel("  $key: $value"))
@@ -164,9 +211,10 @@ class FlowDetailsDialog(
 
         // Body - ONLY this should be in a textarea
         if (flow.request.content.isNotEmpty()) {
-            panel.add(createLabel("Body (${flow.request.content.length} bytes):").apply {
-                font = font.deriveFont(Font.BOLD)
-            })
+            panel.add(labelWithCopy(
+                createLabel("Body (${flow.request.content.length} bytes):").apply { font = font.deriveFont(Font.BOLD) },
+                "Copy request body"
+            ) { flow.request.content })
             panel.add(Box.createVerticalStrut(5))
             val formattedContent = formatJsonIfPossible(flow.request.content)
             val bodyArea = createReadOnlyTextArea(formattedContent, rows = 15)
@@ -204,9 +252,10 @@ class FlowDetailsDialog(
 
         // Headers - as normal labels, not textarea
         if (response.headers.isNotEmpty()) {
-            panel.add(createLabel("Headers (${response.headers.size}):").apply {
-                font = font.deriveFont(Font.BOLD)
-            })
+            panel.add(labelWithCopy(
+                createLabel("Headers (${response.headers.size}):").apply { font = font.deriveFont(Font.BOLD) },
+                "Copy response headers"
+            ) { FlowCopyUtils.formatHeaders(response.headers) })
             panel.add(Box.createVerticalStrut(5))
             response.headers.forEach { (key, value) ->
                 panel.add(createLabel("  $key: $value"))
@@ -216,9 +265,10 @@ class FlowDetailsDialog(
 
         // Body - ONLY this should be in a textarea
         if (response.content.isNotEmpty()) {
-            panel.add(createLabel("Body (${response.content.length} bytes):").apply {
-                font = font.deriveFont(Font.BOLD)
-            })
+            panel.add(labelWithCopy(
+                createLabel("Body (${response.content.length} bytes):").apply { font = font.deriveFont(Font.BOLD) },
+                "Copy response body"
+            ) { response.content })
             panel.add(Box.createVerticalStrut(5))
             val formattedContent = formatJsonIfPossible(response.content)
             val bodyArea = createReadOnlyTextArea(formattedContent, rows = 20)
