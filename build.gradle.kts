@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.5.6"
+version = "1.5.7"
 
 repositories {
     mavenCentral()
@@ -45,6 +45,14 @@ intellijPlatform {
         token.set(providers.gradleProperty("intellijPublishToken"))
     }
 
+    // Run `./gradlew verifyPlugin` to reproduce the JetBrains Marketplace compatibility checks
+    // (deprecated/experimental/internal/removed API usage) before publishing.
+    pluginVerification {
+        ides {
+            recommended()
+        }
+    }
+
     pluginConfiguration {
         ideaVersion {
             // Built against IntelliJ Platform 2024.3 with Java 21 bytecode (requires JBR 21),
@@ -56,6 +64,11 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>Version 1.5.7 - API Modernization</h3>
+            <ul>
+                <li><strong>🧹 Zero deprecated APIs:</strong> Replaced the last deprecated Swing call (JTextComponent.modelToView → modelToView2D). The plugin now passes the JetBrains Plugin Verifier with no deprecated/legacy API usages across IntelliJ 2024.3 → 2026.x.</li>
+            </ul>
+
             <h3>Version 1.5.6 - Mock Picker Fixes</h3>
             <ul>
                 <li><strong>🎯 Endpoint-scoped:</strong> The Debug mock picker now lists only mocks that match the intercepted call — no mocks from other endpoints or collections</li>

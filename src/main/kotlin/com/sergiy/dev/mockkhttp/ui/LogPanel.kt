@@ -273,8 +273,8 @@ class LogPanel(project: Project) : JPanel(BorderLayout()) {
         if (index < 0 || index >= searchMatches.size) return
         try {
             val pos = searchMatches[index]
-            @Suppress("DEPRECATION")
-            val rect = textArea.modelToView(pos) ?: return
+            // modelToView2D replaces the deprecated modelToView(int); .bounds gives a mutable Rectangle.
+            val rect = textArea.modelToView2D(pos)?.bounds ?: return
             // Expand rect so the match is centered vertically
             val viewportHeight = scrollPane.viewport.height
             rect.y = maxOf(0, rect.y - viewportHeight / 2)
