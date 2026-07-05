@@ -40,13 +40,17 @@ class MockkHttpPluginClient {
     String? host,
   }) : host = host ?? resolveDefaultHost();
 
-  /// True when running inside the iOS Simulator (CoreSimulator injects
-  /// SIMULATOR_* environment variables into the app process; a physical
-  /// device has none of them).
+  /// True when running inside the iOS Simulator.
+  ///
+  /// Two signals, because the environment depends on HOW the app was launched:
+  /// - SIMULATOR_* env vars (present on SpringBoard/Xcode launches), and
+  /// - the executable path: simulator apps always live under
+  ///   `~/Library/Developer/CoreSimulator/`, physical-device apps never do.
   static bool get isIosSimulator =>
       Platform.isIOS &&
       (Platform.environment.containsKey('SIMULATOR_UDID') ||
-          Platform.environment.containsKey('SIMULATOR_DEVICE_NAME'));
+          Platform.environment.containsKey('SIMULATOR_DEVICE_NAME') ||
+          Platform.resolvedExecutable.contains('/CoreSimulator/'));
 
   /// Resolve the default plugin host for the current platform:
   /// - Android emulator: `10.0.2.2` (guest alias for the host's loopback)

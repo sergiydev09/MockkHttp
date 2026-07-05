@@ -60,6 +60,27 @@ El servidor, el protocolo, los modos (Recording/Debug/Mockk) y toda la UI son lo
 - El listado de apps del simulador muestra todas las apps de usuario (🎭 = detectada con MockkHttp tras su primer arranque o PING).
 - `__CFBundleIdentifier`/`SIMULATOR_*` env vars: verificadas como mecanismo estándar, pero valida en tu app que el banner muestra el bundle id correcto; si no, pasa `packageName:` explícito.
 
+## Troubleshooting (aprendido en las pruebas reales)
+
+**Síntoma: la app y el simulador se detectan, pero no llegan llamadas.**
+
+1. **`packageName:` hardcodeado con el id de Android.** El package de Android
+   (`com.foo.my_app`) y el bundle id de iOS (`com.foo.myApp`) suelen diferir. Si pasas
+   `MockkHttp.init(packageName: '<android>')`, en iOS la app se anuncia con el id
+   equivocado y el plugin **descarta sus flows por el filtro estricto** — y ese descarte
+   solo se loguea en `idea.log`, no en el panel de Logs del plugin. Solución: no pases
+   `packageName` — la autodetección funciona en ambas plataformas (Android via
+   `/proc/self/cmdline`, iOS via `__CFBundleIdentifier`).
+2. **Orden de arranque** (solo versiones < cooldown fix): si la app arrancaba antes de
+   pulsar Start, dejaba de reintentar para siempre. Desde `39a6af4` reintenta cada 15s.
+3. **Verifica la ruta de red desde el Mac**: `printf 'PING\n' | nc -w 2 127.0.0.1 9876`
+   debe responder `PONG` con una sesión iniciada (Start) en el plugin.
+4. **Verifica qué código lleva la app instalada** (sin fiarte del pubspec):
+   ```bash
+   APP=$(xcrun simctl get_app_container booted <bundle-id> app)
+   grep -ac "1.6.0-dev" "$APP"/Frameworks/App.framework/flutter_assets/kernel_blob.bin
+   ```
+
 ## Regenerar el zip del plugin
 ```bash
 ./gradlew buildPlugin   # → build/distributions/MockkHttp-1.6.0-dev.1.zip
