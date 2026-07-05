@@ -61,6 +61,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     @Volatile
     private var refreshingDeviceSerial: String? = null
 
+    // Suppresses combo action events while refreshEmulators() rebuilds the device list, so
+    // the transient auto-selection of index 0 can't queue an app scan for the wrong device.
+    private var isRebuildingDeviceCombo = false
+
     enum class Mode {
         STOPPED,
         RECORDING,      // Recording without debug
@@ -416,36 +420,66 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         // Run ADB/simctl operations in background to avoid blocking EDT
         object : Task.Backgroundable(project, "Refreshing Devices...", false) {
-            private var devices: List<EmulatorInfo> = emptyList()
+            private var androidDevices: List<EmulatorInfo> = emptyList()
+            private var bootedSimulators: List<EmulatorInfo>? = emptyList()
+            private var iosDevices: List<EmulatorInfo>? = emptyList()
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                // Android (ADB) + iOS Simulators (simctl) + physical iOS devices (devicectl)
-                devices = emulatorManager.getConnectedDevices() +
-                        simulatorManager.getBootedSimulators() +
-                        simulatorManager.getConnectedIosDevices()
+                // Android (ADB) + iOS Simulators (simctl) + physical iOS devices (devicectl).
+                // The iOS enumerations return null on TOOLING failure (vs a genuine empty list).
+                androidDevices = emulatorManager.getConnectedDevices()
+                bootedSimulators = simulatorManager.getBootedSimulators()
+                iosDevices = simulatorManager.getConnectedIosDevices()
             }
 
             override fun onSuccess() {
                 // Update UI on EDT
-                emulatorComboBox.removeAllItems()
-                devices.forEach { device ->
-                    emulatorComboBox.addItem(device)
+                val iosEnumerationFailed = bootedSimulators == null || iosDevices == null
+                var devices = androidDevices +
+                        (bootedSimulators ?: emptyList()) +
+                        (iosDevices ?: emptyList())
+
+                // A transient simctl/devicectl failure must NOT look like a disconnection:
+                // iOS capture runs over a plain socket and doesn't depend on that tooling.
+                // Keep the previously selected iOS device in the list instead of stopping.
+                if (previousSelection != null &&
+                    previousSelection.platform != DevicePlatform.ANDROID &&
+                    iosEnumerationFailed &&
+                    devices.none { it.serialNumber == previousSelection.serialNumber }
+                ) {
+                    logger.warn("⚠️ iOS device enumeration failed transiently; keeping ${previousSelection.displayName} selected")
+                    devices = devices + previousSelection
                 }
 
-                // Try to restore previous selection if the device is still connected
-                if (previousSelection != null && devices.any { it.serialNumber == previousSelection.serialNumber }) {
-                    val index = devices.indexOfFirst { it.serialNumber == previousSelection.serialNumber }
-                    if (index >= 0) {
-                        emulatorComboBox.selectedIndex = index
-                        logger.debug("Restored device selection: ${previousSelection.displayName}")
+                // Rebuild the combo with events suppressed, so the transient auto-selection of
+                // the first added item can't queue an app scan for the wrong device.
+                isRebuildingDeviceCombo = true
+                try {
+                    emulatorComboBox.removeAllItems()
+                    devices.forEach { device ->
+                        emulatorComboBox.addItem(device)
                     }
-                } else if (devices.isNotEmpty() && selectedEmulator == null) {
-                    // Only auto-select first if nothing was selected before
-                    emulatorComboBox.selectedIndex = 0
-                    logger.debug("Auto-selected first device")
-                } else if (previousSelection != null && devices.none { it.serialNumber == previousSelection.serialNumber }) {
-                    // Previously selected device is now disconnected
+
+                    val restoreIndex = previousSelection
+                        ?.let { prev -> devices.indexOfFirst { it.serialNumber == prev.serialNumber } }
+                        ?: -1
+                    when {
+                        restoreIndex >= 0 -> {
+                            emulatorComboBox.selectedIndex = restoreIndex
+                            logger.debug("Restored device selection: ${previousSelection?.displayName}")
+                        }
+                        previousSelection == null && devices.isNotEmpty() -> {
+                            emulatorComboBox.selectedIndex = 0
+                            logger.debug("Auto-selected first device")
+                        }
+                    }
+                } finally {
+                    isRebuildingDeviceCombo = false
+                }
+
+                if (previousSelection != null && devices.none { it.serialNumber == previousSelection.serialNumber }) {
+                    // Previously selected device is genuinely disconnected
                     logger.warn("⚠️ Previously selected device disconnected")
                     selectedEmulator = null
                     selectedApp = null
@@ -455,12 +489,19 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         logger.warn("⚠️ Stopping interceptor due to device disconnection")
                         stop()
                     }
+                    updateButtonStates()
+                    return
                 }
+
+                // Apply the effective selection exactly once (queues the app scan for the
+                // right device only)
+                onEmulatorSelected()
             }
         }.queue()
     }
 
     private fun onEmulatorSelected() {
+        if (isRebuildingDeviceCombo) return
         selectedEmulator = emulatorComboBox.selectedItem as? EmulatorInfo
         selectedEmulator?.let { emulator ->
             logger.info("📱 Emulator selected: ${emulator.fullDescription}")
@@ -505,10 +546,25 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
 
             override fun onSuccess() {
-                refreshingDeviceSerial = null
+                // Only release the guard if it still belongs to this scan
+                if (refreshingDeviceSerial == emulator.serialNumber) {
+                    refreshingDeviceSerial = null
+                }
+
+                // Discard stale results: the user (or a device refresh) may have switched
+                // devices while this scan was running — never mix apps across devices.
+                if (selectedEmulator?.serialNumber != emulator.serialNumber) {
+                    logger.debug("Discarding app scan results for ${emulator.displayName} (no longer selected)")
+                    refreshAppsButton.isEnabled = selectedEmulator != null
+                    return
+                }
 
                 // Update UI on EDT
                 logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp")
+
+                // Clear at apply-time too: guards against results from an earlier scan of a
+                // different device having been applied in between.
+                appComboBox.removeAllItems()
 
                 if (mockkHttpApps.isEmpty()) {
                     when (emulator.platform) {
@@ -531,7 +587,9 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
 
             override fun onThrowable(error: Throwable) {
-                refreshingDeviceSerial = null
+                if (refreshingDeviceSerial == emulator.serialNumber) {
+                    refreshingDeviceSerial = null
+                }
                 logger.error("Failed to scan apps: ${error.message}")
                 refreshAppsButton.isEnabled = selectedEmulator != null
             }

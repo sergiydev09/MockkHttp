@@ -61,12 +61,17 @@ class SimulatorManager(project: Project) {
 
     /**
      * List booted iOS Simulators via `xcrun simctl list devices booted --json`.
+     *
+     * Returns null when the tooling FAILED (timeout, crash, parse error) — callers must
+     * treat that as "unknown", NOT as "no simulators", so a transient simctl failure never
+     * makes a still-booted simulator look disconnected. An empty list is a genuine
+     * "no booted simulators" answer.
      */
-    fun getBootedSimulators(): List<EmulatorInfo> {
+    fun getBootedSimulators(): List<EmulatorInfo>? {
         if (!isAvailable()) return emptyList()
 
         val json = runCommand(listOf("/usr/bin/xcrun", "simctl", "list", "devices", "booted", "--json"))
-            ?: return emptyList()
+            ?: return null
 
         return try {
             val devicesByRuntime = JsonParser.parseString(json).asJsonObject
@@ -109,31 +114,35 @@ class SimulatorManager(project: Project) {
             simulators
         } catch (e: Exception) {
             logger.warn("Failed to parse simctl device list: ${e.message}")
-            emptyList()
+            null
         }
     }
 
     /**
      * List physical iOS devices via `xcrun devicectl list devices` (Xcode 15+, best effort).
      * The device must be connected/paired; apps on it may not be listable.
+     *
+     * Returns null when the tooling FAILED (see [getBootedSimulators]); an empty list is a
+     * genuine "no connected devices" answer.
      */
-    fun getConnectedIosDevices(): List<EmulatorInfo> {
+    fun getConnectedIosDevices(): List<EmulatorInfo>? {
         if (!isAvailable()) return emptyList()
 
-        val outputFile = File.createTempFile("mockkhttp-devicectl", ".json")
+        var outputFile: File? = null
         return try {
+            outputFile = File.createTempFile("mockkhttp-devicectl", ".json")
             runCommand(
                 listOf(
                     "/usr/bin/xcrun", "devicectl", "list", "devices",
                     "--json-output", outputFile.absolutePath
                 )
-            ) ?: return emptyList()
+            ) ?: return null
 
-            if (!outputFile.exists() || outputFile.length() == 0L) return emptyList()
+            if (!outputFile.exists() || outputFile.length() == 0L) return null
 
             val devices = JsonParser.parseString(outputFile.readText()).asJsonObject
                 .getAsJsonObject("result")
-                ?.getAsJsonArray("devices") ?: return emptyList()
+                ?.getAsJsonArray("devices") ?: return null
 
             val result = mutableListOf<EmulatorInfo>()
             for (element in devices) {
@@ -172,9 +181,9 @@ class SimulatorManager(project: Project) {
             result
         } catch (e: Exception) {
             logger.debug("devicectl enumeration failed (best effort): ${e.message}")
-            emptyList()
+            null
         } finally {
-            outputFile.delete()
+            outputFile?.delete()
         }
     }
 
@@ -248,8 +257,9 @@ class SimulatorManager(project: Project) {
     fun getInstalledAppsPhysical(device: EmulatorInfo): List<AppInfo> {
         if (!isAvailable()) return pingKnownApps()
 
-        val outputFile = File.createTempFile("mockkhttp-deviceapps", ".json")
+        var outputFile: File? = null
         try {
+            outputFile = File.createTempFile("mockkhttp-deviceapps", ".json")
             runCommand(
                 listOf(
                     "/usr/bin/xcrun", "devicectl", "device", "info", "apps",
@@ -292,7 +302,7 @@ class SimulatorManager(project: Project) {
         } catch (e: Exception) {
             logger.debug("devicectl app listing failed (best effort): ${e.message}")
         } finally {
-            outputFile.delete()
+            outputFile?.delete()
         }
 
         logger.info("📡 Falling back to PING-announced apps for ${device.displayName}")
