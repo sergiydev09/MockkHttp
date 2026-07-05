@@ -1,3 +1,9 @@
+## 1.6.0-dev.1
+
+- Feature: iOS support. The plugin host is now resolved per platform — Android emulator (`10.0.2.2`), iOS Simulator (`127.0.0.1`, the simulator shares the Mac's network stack, zero config), physical iOS device (pass your Mac's LAN IP via `MockkHttp.init(host: ...)` / `MockkHttpDioInterceptor(host: ...)` and add `NSLocalNetworkUsageDescription` to Info.plist).
+- Feature: bundle id auto-detection on iOS (`__CFBundleIdentifier`), so flows are routed to the right IDE project without configuration.
+- Feature: marker file in the app's data container on the iOS Simulator so the IDE plugin can detect MockkHttp-enabled apps.
+
 ## 1.5.4
 
 - Feature: Capture the request body on the `HttpOverrides` path (`package:http` / raw `HttpClient`) so POST/PUT payloads are shown in the plugin Inspector. The `dio` interceptor already captured it. Bounded to 5MB; binary/oversized bodies show a placeholder.

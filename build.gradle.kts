@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.5.7"
+version = "1.6.0-dev.1"
 
 repositories {
     mavenCentral()
@@ -64,6 +64,13 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>Version 1.6.0-dev.1 - iOS Support Spike (local testing build)</h3>
+            <ul>
+                <li><strong>🍎 iOS Simulators:</strong> Booted simulators appear in the Device selector; their user apps are listed via simctl. Flutter apps using mockk_http connect to 127.0.0.1:9876 automatically (the simulator shares the Mac's network stack).</li>
+                <li><strong>🍏 Physical iOS devices (best effort):</strong> Enumerated via devicectl (Xcode 15+); the Flutter app must be started with MockkHttp.init(host: 'your Mac LAN IP').</li>
+                <li><strong>🔄 Refresh Devices button:</strong> Manually refresh the combined Android + iOS device list.</li>
+            </ul>
+
             <h3>Version 1.5.7 - API Modernization</h3>
             <ul>
                 <li><strong>🧹 Zero deprecated APIs:</strong> Replaced the last deprecated Swing call (JTextComponent.modelToView → modelToView2D). The plugin now passes the JetBrains Plugin Verifier with no deprecated/legacy API usages across IntelliJ 2024.3 → 2026.x.</li>
