@@ -24,7 +24,14 @@ class MockkHttpPluginClient {
   static const int _pingCacheDurationMs = 5000;
   static const int _maxFailedAttempts = 3;
 
+  /// After [_maxFailedAttempts] consecutive failures, wait this long before
+  /// probing again (instead of giving up forever). This makes launch order
+  /// irrelevant: an app started BEFORE pressing Start in the plugin will
+  /// reconnect by itself once the server is up.
+  static const int _failureCooldownMs = 15000;
+
   int _failedAttempts = 0;
+  int _lastFailureTime = 0;
   int _lastPingTime = 0;
   bool _lastPingResult = false;
 
@@ -63,10 +70,17 @@ class MockkHttpPluginClient {
   }
 
   /// Check if the plugin is listening. Result cached for 5 seconds.
+  /// After repeated failures the client backs off for [_failureCooldownMs]
+  /// and then probes again — it never gives up permanently.
   Future<bool> isPluginConnected() async {
-    if (_failedAttempts >= _maxFailedAttempts) return false;
-
     final now = DateTime.now().millisecondsSinceEpoch;
+
+    if (_failedAttempts >= _maxFailedAttempts) {
+      if (now - _lastFailureTime < _failureCooldownMs) return false;
+      // Cooldown elapsed — allow a fresh probe (one attempt per cooldown).
+      _failedAttempts = _maxFailedAttempts - 1;
+    }
+
     if (now - _lastPingTime < _pingCacheDurationMs) return _lastPingResult;
 
     try {
@@ -95,6 +109,7 @@ class MockkHttpPluginClient {
       return success;
     } catch (_) {
       _failedAttempts++;
+      _lastFailureTime = now;
       _lastPingTime = now;
       _lastPingResult = false;
       return false;
