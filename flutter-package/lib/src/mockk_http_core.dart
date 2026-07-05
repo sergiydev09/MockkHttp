@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'ios_bundle_info.dart';
 import 'mockk_http_client.dart';
 import 'http_overrides.dart';
 import 'models.dart';
@@ -205,13 +206,10 @@ class MockkHttp {
     }
 
     if (Platform.isIOS) {
-      // Xcode-launched processes carry __CFBundleIdentifier...
+      // Env vars first (present on some launch paths)...
       final bundleId = Platform.environment['__CFBundleIdentifier'];
       if (bundleId != null && bundleId.isNotEmpty) return bundleId;
 
-      // ...but SpringBoard-launched apps (incl. `flutter run` on recent iOS
-      // runtimes) do NOT. launchd names the app service
-      // "UIKitApplication:<bundleid>[hash][tag]" — extract the id from there.
       final xpcName = Platform.environment['XPC_SERVICE_NAME'];
       if (xpcName != null && xpcName.startsWith('UIKitApplication:')) {
         final raw = xpcName.substring('UIKitApplication:'.length);
@@ -219,7 +217,10 @@ class MockkHttp {
         final id = (end > 0 ? raw.substring(0, end) : raw).trim();
         if (id.isNotEmpty) return id;
       }
-      return null;
+
+      // ...but on recent iOS runtimes Platform.environment is EMPTY, so the
+      // reliable source is the app's own Info.plist (next to the executable).
+      return readIosBundleIdentifier();
     }
 
     return null;
