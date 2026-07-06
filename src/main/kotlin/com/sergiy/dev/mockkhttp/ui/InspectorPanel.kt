@@ -253,6 +253,13 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         flowStore.addFlowAddedListener { flow ->
             SwingUtilities.invokeLater {
                 allFlows.add(flow)
+                // Keep the local mirror bounded like the store, otherwise flows
+                // evicted from FlowStore would still be pinned in memory here
+                val maxFlows = flowStore.maxFlows()
+                while (allFlows.size > maxFlows) {
+                    val evicted = allFlows.removeAt(0)
+                    flowListModel.removeElement(evicted)
+                }
                 // Apply filter
                 if (matchesSearchQuery(flow, searchQuery)) {
                     flowListModel.addElement(flow)
@@ -946,7 +953,32 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
+    /**
+     * Warn before creating mocks from flows whose stored body was truncated by the
+     * retention cache — the mock would serve an incomplete body to the app.
+     * Returns true to proceed.
+     */
+    private fun confirmTruncatedBodies(flows: List<HttpFlowData>): Boolean {
+        val truncatedCount = flows.count { FlowStore.isBodyTruncated(it.response?.content) }
+        if (truncatedCount == 0) return true
+
+        val result = JOptionPane.showConfirmDialog(
+            this,
+            "$truncatedCount of ${flows.size} selected flow(s) have a body TRUNCATED by the cache\n" +
+                    "(Settings → Cache → Max stored body size). A mock created from them would\n" +
+                    "serve an incomplete body to your app.\n\n" +
+                    "Tip: raise the limit and re-capture the call to mock the full body.\n\n" +
+                    "Create the mock(s) anyway?",
+            "Truncated Body",
+            JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE
+        )
+        return result == JOptionPane.YES_OPTION
+    }
+
     private fun createMockFromFlow(flow: HttpFlowData) {
+        if (!confirmTruncatedBodies(listOf(flow))) return
+
         // Use selected app's package name to filter collections
         val packageName = selectedApp?.packageName
         val dialog = CreateMockDialog(
@@ -960,6 +992,8 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun createMocksFromFlows(flows: List<HttpFlowData>) {
+        if (!confirmTruncatedBodies(flows)) return
+
         // Use selected app's package name to filter collections
         val packageName = selectedApp?.packageName
         val dialog = BatchCreateMockDialog(

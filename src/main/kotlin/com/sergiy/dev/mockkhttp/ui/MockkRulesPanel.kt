@@ -616,6 +616,7 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         if (newEnabledState) {
             // Enabling collection: enable all its rules (and handle conflicts)
+            val allDisabledConflicts = mutableListOf<MockkRulesStore.MockkRule>()
             for (rule in rules) {
                 if (!rule.enabled) {
                     // Enable the rule
@@ -629,10 +630,13 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                         // Track affected collection
                         affectedCollectionIds.add(conflictingRule.collectionId)
                     }
+                    allDisabledConflicts.addAll(conflicts)
 
                     updateRuleNodeInTree(rule.id)
                 }
             }
+            // Make the automatic resolution visible here too (not only on rule toggles)
+            notifyConflictsDisabled("collection '${collection.name}'", allDisabledConflicts)
             logger.info("✅ Enabled collection '${collection.name}' and all its rules")
         } else {
             // Disabling collection: disable all its rules
@@ -670,6 +674,8 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                     // Track affected collection
                     affectedCollectionIds.add(conflictingRule.collectionId)
                 }
+                // Make the automatic resolution visible to the user
+                notifyConflictsDisabled("'${rule.name}'", conflicts)
             }
         }
 
@@ -801,7 +807,8 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     /**
      * Find all rules that conflict with the given rule (same request pattern).
-     * Returns only enabled rules from other collections.
+     * Returns enabled rules from ANY collection (including the rule's own — e.g.
+     * a "(imported)" copy added by a merge import next to the original).
      */
     private fun findConflictingRules(rule: MockkRulesStore.MockkRule): List<MockkRulesStore.MockkRule> {
         val allRules = mockkRulesStore.getAllRules()
@@ -810,12 +817,54 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
             otherRule.id != rule.id &&
             // Only consider enabled rules
             otherRule.enabled &&
-            // Only from other collections
-            otherRule.collectionId != rule.collectionId &&
             // Check if the collection is enabled
             mockkRulesStore.getCollection(otherRule.collectionId)?.enabled == true &&
             // Check if requests are identical
             areRulesIdentical(rule, otherRule)
+        }
+    }
+
+    /** Escape user-controlled names before embedding them in HTML tooltips/notifications. */
+    private fun escapeHtml(text: String): String =
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    /**
+     * Human-readable, HTML-safe list of rules (any state) targeting the same
+     * endpoint, e.g. "'login OK' (Auth, active), 'login 500' (Errors, inactive)".
+     * Returns null when the rule has no duplicates.
+     */
+    private fun describeDuplicates(rule: MockkRulesStore.MockkRule): String? {
+        val duplicates = mockkRulesStore.getAllRules().filter {
+            it.id != rule.id && areRulesIdentical(rule, it)
+        }
+        if (duplicates.isEmpty()) return null
+        return duplicates.joinToString(", ") { other ->
+            val collectionName = mockkRulesStore.getCollection(other.collectionId)?.name ?: "?"
+            "'${escapeHtml(other.name)}' (${escapeHtml(collectionName)}, ${if (other.enabled) "active" else "inactive"})"
+        }
+    }
+
+    /**
+     * Balloon notification so automatic conflict resolution is VISIBLE —
+     * silently flipping other rules was confusing.
+     */
+    private fun notifyConflictsDisabled(enabledLabel: String, disabled: List<MockkRulesStore.MockkRule>) {
+        if (disabled.isEmpty()) return
+        val disabledList = disabled.joinToString(", ") { other ->
+            val collectionName = mockkRulesStore.getCollection(other.collectionId)?.name ?: "?"
+            "'${escapeHtml(other.name)}' (${escapeHtml(collectionName)})"
+        }
+        try {
+            com.intellij.notification.NotificationGroupManager.getInstance()
+                .getNotificationGroup("MockkHttp Notifications")
+                .createNotification(
+                    "Mock conflict resolved",
+                    "Enabled ${escapeHtml(enabledLabel)} — disabled ${disabled.size} rule(s) answering the same endpoint: $disabledList",
+                    com.intellij.notification.NotificationType.INFORMATION
+                )
+                .notify(project)
+        } catch (_: Exception) {
+            // Notification group unavailable — the log already records it
         }
     }
 
@@ -1007,16 +1056,52 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                 val file = File(virtualFile.path)
                 val json = file.readText()
 
-                val imported = mockkRulesStore.importCollections(json, renameOnConflict = true)
+                val analysis = mockkRulesStore.analyzeImport(json)
 
-                logger.info("✅ Imported ${imported.size} collection(s) from ${file.name}")
-                Messages.showInfoMessage(
-                    this,
-                    "Successfully imported ${imported.size} collection(s) from:\n${file.name}",
-                    "Import Successful"
-                )
+                if (!analysis.hasExistingCollections) {
+                    // Nothing overlaps: plain import
+                    val imported = mockkRulesStore.importCollections(json, renameOnConflict = true)
+                    logger.info("✅ Imported ${imported.size} collection(s) from ${file.name}")
+                    Messages.showInfoMessage(
+                        this,
+                        "Successfully imported ${imported.size} collection(s) from:\n${file.name}",
+                        "Import Successful"
+                    )
+                } else {
+                    // Some collections already exist: offer a merge instead of duplicating
+                    val dialog = ImportMergeDialog(project, analysis)
+                    if (!dialog.showAndGet()) return@chooseFile
 
-                // Refresh tree to show imported collections
+                    when (dialog.selectedMode) {
+                        ImportMergeDialog.Mode.MERGE -> {
+                            val result = mockkRulesStore.applyMergeImport(analysis, dialog.selectedStrategy)
+                            // Keep collection enabled-state consistent with their (possibly new) rules
+                            mockkRulesStore.getAllCollections().forEach { syncCollectionStateWithRules(it.id) }
+                            Messages.showInfoMessage(
+                                this,
+                                buildString {
+                                    appendLine("Merge complete:")
+                                    if (result.collectionsCreated > 0) appendLine("• ${result.collectionsCreated} new collection(s) created")
+                                    appendLine("• ${result.rulesAdded} missing rule(s) added")
+                                    if (result.rulesReplaced > 0) appendLine("• ${result.rulesReplaced} rule(s) replaced with the imported version")
+                                    if (result.rulesKeptBoth > 0) appendLine("• ${result.rulesKeptBoth} changed rule(s) added alongside the existing ones")
+                                    appendLine("• ${result.rulesSkipped} identical/skipped rule(s) left untouched")
+                                },
+                                "Import Merged"
+                            )
+                        }
+                        ImportMergeDialog.Mode.SEPARATE_COPIES -> {
+                            val imported = mockkRulesStore.importCollections(json, renameOnConflict = true)
+                            Messages.showInfoMessage(
+                                this,
+                                "Imported ${imported.size} collection(s) as separate copies.",
+                                "Import Successful"
+                            )
+                        }
+                    }
+                }
+
+                // Refresh tree to show imported/merged collections
                 SwingUtilities.invokeLater { loadTreeData() }
             } catch (e: Exception) {
                 logger.error("Failed to import collections", e)
@@ -1144,8 +1229,9 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                         val enabledRulesCount = rules.count { it.enabled }
                         val hasActiveRules = enabledRulesCount > 0
 
-                        // ALWAYS show folder icon (never changes)
-                        icon = AllIcons.Nodes.Folder
+                        // Checkbox icon: makes the one-click toggle DISCOVERABLE
+                        // (the click zone over the icon already toggles the collection)
+                        icon = if (hasActiveRules) AllIcons.Diff.GutterCheckBoxSelected else AllIcons.Diff.GutterCheckBox
 
                         // Build text with badge
                         val badge = if (collection.packageName.isNotEmpty()) {
@@ -1154,12 +1240,10 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                             " ($enabledRulesCount/${rules.size} active)"
                         }
 
-                        // Add "✗" prefix if no active rules
-                        val prefix = if (!hasActiveRules) "✗ " else ""
-                        text = prefix + collection.name + badge
+                        text = collection.name + badge
 
                         // Tooltip
-                        toolTipText = "Click on folder icon to toggle collection | Double-click name to edit"
+                        toolTipText = "Click the checkbox to enable/disable the collection | Double-click name to edit"
 
                         // Color based on state: white/normal = active, gray = inactive
                         if (!sel) {
@@ -1176,8 +1260,8 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                     is TreeNode.RuleNode -> {
                         val rule = nodeData.rule
 
-                        // Rule icon - same for all
-                        icon = AllIcons.Actions.Lightning
+                        // Checkbox icon: makes the one-click toggle DISCOVERABLE
+                        icon = if (rule.enabled) AllIcons.Diff.GutterCheckBoxSelected else AllIcons.Diff.GutterCheckBox
 
                         // Check if this rule has duplicates in other collections
                         val hasDuplicates = hasEnabledDuplicatesInOtherCollections(rule)
@@ -1191,12 +1275,16 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
                             ""
                         }
 
-                        // Add "✗" prefix if disabled
-                        val prefix = if (!rule.enabled) "✗ " else ""
-                        text = "$prefix${rule.name}$duplicateIndicator - ${rule.method} ${rule.host}${rule.path}"
+                        text = "${rule.name}$duplicateIndicator - ${rule.method} ${rule.host}${rule.path}"
 
-                        // Tooltip
-                        toolTipText = "Click on icon to toggle rule | Double-click name to edit"
+                        // Tooltip: name WHICH rules target the same endpoint, so the
+                        // user can see at a glance who else answers this call
+                        val duplicatesInfo = describeDuplicates(rule)
+                        toolTipText = if (duplicatesInfo != null) {
+                            "<html>Click the checkbox to enable/disable | Double-click to edit<br><b>Same endpoint as:</b> $duplicatesInfo</html>"
+                        } else {
+                            "Click the checkbox to enable/disable | Double-click name to edit"
+                        }
 
                         // Color based on state: white/normal = enabled, gray = disabled
                         if (!sel) {

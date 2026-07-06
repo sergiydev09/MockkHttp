@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.6.0-dev.1"
+version = "1.6.0"
 
 repositories {
     mavenCentral()
@@ -64,10 +64,13 @@ intellijPlatform {
         }
 
         changeNotes = """
-            <h3>Version 1.6.0-dev.1 - iOS Support Spike (local testing build)</h3>
+            <h3>Version 1.6.0 - iOS Support (Flutter), Cache Manager & Smarter Mocks</h3>
             <ul>
-                <li><strong>🍎 iOS Simulators:</strong> Booted simulators appear in the Device selector; their user apps are listed via simctl. Flutter apps using mockk_http connect to 127.0.0.1:9876 automatically (the simulator shares the Mac's network stack).</li>
-                <li><strong>🍏 Physical iOS devices (best effort):</strong> Enumerated via devicectl (Xcode 15+); the Flutter app must be started with MockkHttp.init(host: 'your Mac LAN IP').</li>
+                <li><strong>🍎 iOS Simulators (Flutter):</strong> Booted simulators appear in the Device selector (apps listed via simctl) and Flutter apps using mockk_http 1.6.0 connect automatically — no proxy, no cert, no port forwarding. Recording/Debug/Mockk work exactly like on Android.</li>
+                <li><strong>🍏 Physical iOS devices (best effort):</strong> Enumerated via devicectl (Xcode 15+); start the Flutter app with MockkHttp.init(host: 'your Mac LAN IP').</li>
+                <li><strong>🧠 Cache & Memory manager:</strong> New Settings section with configurable limits (retained flows, stored body size), live usage display and a one-click clear. Fixes IDE slowdowns on long sessions (unbounded flow bodies and an O(n²) log buffer).</li>
+                <li><strong>☑️ Easier mock management:</strong> Real checkboxes to enable/disable rules and collections with one click; tooltips name which other rules answer the same endpoint; a notification shows when enabling a rule auto-disables conflicting ones.</li>
+                <li><strong>📥 Smart import:</strong> Importing a JSON whose collections already exist now offers a MERGE — missing rules are added, identical ones are never duplicated, and for changed rules you choose replace / keep both / skip.</li>
                 <li><strong>🔄 Refresh Devices button:</strong> Manually refresh the combined Android + iOS device list.</li>
             </ul>
 

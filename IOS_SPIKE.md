@@ -1,6 +1,6 @@
 # iOS Support Spike — guía de prueba local (Flutter en iOS)
 
-Rama: `spike/ios-flutter-simulator` · Plugin `1.6.0-dev.1` · mockk_http `1.6.0-dev.1`
+Rama: `spike/ios-flutter-simulator` · Plugin `1.6.0` · mockk_http `1.6.0`
 
 ## Qué añade este spike
 
@@ -14,7 +14,7 @@ El servidor, el protocolo, los modos (Recording/Debug/Mockk) y toda la UI son lo
 ## Cómo probar (iOS Simulator — el camino feliz)
 
 1. **Instala el plugin del spike** en Android Studio/IntelliJ:
-   - Zip generado en `build/distributions/MockkHttp-1.6.0-dev.1.zip`
+   - Zip generado en `build/distributions/MockkHttp-1.6.0.zip`
    - `Settings → Plugins → ⚙️ → Install Plugin from Disk…` → selecciona el zip → Restart.
 
 2. **Apunta tu app Flutter al paquete local** (en el `pubspec.yaml` de tu app):
@@ -37,7 +37,7 @@ El servidor, el protocolo, los modos (Recording/Debug/Mockk) y toda la UI son lo
    open -a Simulator          # o desde Xcode/Android Studio
    flutter run                # target: el simulador iOS
    ```
-   En la consola de Flutter verás el banner `MockkHttp v1.6.0-dev.1 (iOS Simulator) … Host: 127.0.0.1:9876`.
+   En la consola de Flutter verás el banner `MockkHttp v1.6.0 (iOS Simulator) … Host: 127.0.0.1:9876`.
 
 4. **En el plugin**: pestaña MockkHttp → pulsa 🔄 junto a "Device" → aparece `🍎 iPhone … (iOS 18.x)` → selecciona tu app (🎭 si ya se anunció) → **Start** en Recording/Debug/Mockk. Las llamadas del simulador aparecen en el Inspector como las de Android.
 
@@ -83,5 +83,5 @@ El servidor, el protocolo, los modos (Recording/Debug/Mockk) y toda la UI son lo
 
 ## Regenerar el zip del plugin
 ```bash
-./gradlew buildPlugin   # → build/distributions/MockkHttp-1.6.0-dev.1.zip
+./gradlew buildPlugin   # → build/distributions/MockkHttp-1.6.0.zip
 ```

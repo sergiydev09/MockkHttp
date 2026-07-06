@@ -117,6 +117,16 @@ class LogPanel(project: Project) : JPanel(BorderLayout()) {
             appendLog(entry.toString())
         }
 
+        // When logs are cleared from ANYWHERE (this tab's button, Settings → Cache),
+        // release the text area's copy too — it was the dominant log memory holder
+        logger.addClearListener {
+            textArea.text = ""
+            clearHighlights()
+            searchMatches.clear()
+            currentMatchIndex = -1
+            matchCountLabel.text = if (searchField.text.isNotBlank()) "0 results" else ""
+        }
+
         // Cmd+F shortcut on the textArea to focus search
         textArea.addKeyListener(object : KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
@@ -297,6 +307,11 @@ class LogPanel(project: Project) : JPanel(BorderLayout()) {
 
     private fun appendLog(logText: String) {
         SwingUtilities.invokeLater {
+            // Bound the text area document: the logger caps at 1000 entries but this
+            // UI text used to grow unbounded over long sessions
+            if (textArea.document.length > 2_000_000) {
+                textArea.replaceRange(null, 0, textArea.document.length - 1_000_000)
+            }
             if (textArea.text.isNotEmpty()) {
                 textArea.append("\n")
             }
