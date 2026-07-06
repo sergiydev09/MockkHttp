@@ -649,6 +649,172 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         return imported.firstOrNull()
     }
 
+    // ========== SMART IMPORT (merge with existing collections) ==========
+
+    /** What to do with an imported rule whose endpoint already exists but whose response changed. */
+    enum class ChangedRuleStrategy {
+        REPLACE,    // update the existing rule with the imported response
+        KEEP_BOTH,  // keep the existing rule and add the imported one as a new rule
+        SKIP        // leave the existing rule untouched
+    }
+
+    /** Per-collection diff between an import file and the current store. */
+    data class CollectionDiff(
+        val incoming: com.sergiy.dev.mockkhttp.model.MockkCollectionData,
+        val existing: com.sergiy.dev.mockkhttp.model.MockkCollection?, // matched by name; null = new collection
+        val newRules: List<com.sergiy.dev.mockkhttp.model.MockkRuleData>,
+        val changedRules: List<Pair<com.sergiy.dev.mockkhttp.model.MockkRuleData, MockkRule>>,
+        val identicalRules: List<com.sergiy.dev.mockkhttp.model.MockkRuleData>
+    )
+
+    /** Result of [analyzeImport]: the parsed export plus one diff per collection. */
+    data class ImportAnalysis(
+        val diffs: List<CollectionDiff>
+    ) {
+        val hasExistingCollections: Boolean get() = diffs.any { it.existing != null }
+    }
+
+    private fun endpointSignature(
+        method: String, scheme: String, host: String, path: String,
+        queryParams: List<QueryParam>
+    ): String {
+        val params = queryParams.sortedBy { it.key }
+            .joinToString(",") { "${it.key}=${it.value}:${it.required}:${it.matchType}" }
+        return "$method:$scheme:$host:$path:$params"
+    }
+
+    private fun signatureOf(rule: MockkRule) =
+        endpointSignature(rule.method, rule.scheme, rule.host, rule.path, rule.queryParams)
+
+    private fun signatureOf(rule: com.sergiy.dev.mockkhttp.model.MockkRuleData) =
+        endpointSignature(rule.method, rule.scheme, rule.host, rule.path, rule.queryParams)
+
+    private fun sameResponse(imported: com.sergiy.dev.mockkhttp.model.MockkRuleData, existing: MockkRule): Boolean =
+        imported.statusCode == existing.statusCode &&
+                imported.headers == existing.headers &&
+                imported.content == existing.content
+
+    /**
+     * Parse an export JSON and diff it against the current store, matching
+     * collections by name and rules by endpoint signature.
+     */
+    fun analyzeImport(json: String): ImportAnalysis {
+        val gson = com.google.gson.Gson()
+        val exportData = gson.fromJson(json, com.sergiy.dev.mockkhttp.model.MockkCollectionExport::class.java)
+
+        val diffs = exportData.collections.map { collectionData ->
+            val existing = collections.values.find { it.name == collectionData.collection.name }
+            if (existing == null) {
+                CollectionDiff(collectionData, null, collectionData.rules, emptyList(), emptyList())
+            } else {
+                val existingBySignature = getRulesInCollection(existing.id).associateBy { signatureOf(it) }
+                val newRules = mutableListOf<com.sergiy.dev.mockkhttp.model.MockkRuleData>()
+                val changedRules = mutableListOf<Pair<com.sergiy.dev.mockkhttp.model.MockkRuleData, MockkRule>>()
+                val identicalRules = mutableListOf<com.sergiy.dev.mockkhttp.model.MockkRuleData>()
+
+                for (incomingRule in collectionData.rules) {
+                    val match = existingBySignature[signatureOf(incomingRule)]
+                    when {
+                        match == null -> newRules.add(incomingRule)
+                        sameResponse(incomingRule, match) -> identicalRules.add(incomingRule)
+                        else -> changedRules.add(incomingRule to match)
+                    }
+                }
+                CollectionDiff(collectionData, existing, newRules, changedRules, identicalRules)
+            }
+        }
+
+        return ImportAnalysis(diffs)
+    }
+
+    /** Summary of what a merge import actually did. */
+    data class MergeResult(
+        var collectionsCreated: Int = 0,
+        var rulesAdded: Int = 0,
+        var rulesReplaced: Int = 0,
+        var rulesKeptBoth: Int = 0,
+        var rulesSkipped: Int = 0
+    )
+
+    /**
+     * Apply a merge import: missing rules are added into the matched existing
+     * collections, changed rules follow [strategy], identical rules are skipped,
+     * and collections with no match are created whole.
+     */
+    fun applyMergeImport(analysis: ImportAnalysis, strategy: ChangedRuleStrategy): MergeResult {
+        val result = MergeResult()
+
+        fun addRuleTo(
+            collectionId: String,
+            data: com.sergiy.dev.mockkhttp.model.MockkRuleData,
+            nameSuffix: String = "",
+            enabledOverride: Boolean? = null
+        ) {
+            val rule = MockkRule(
+                id = "rule_" + System.currentTimeMillis() + "_" + (Math.random() * 1000000).toInt().toString(36),
+                name = data.name + nameSuffix,
+                enabled = enabledOverride ?: data.enabled,
+                method = data.method,
+                collectionId = collectionId,
+                scheme = data.scheme,
+                host = data.host,
+                port = data.port,
+                path = data.path,
+                queryParams = data.queryParams,
+                statusCode = data.statusCode,
+                headers = data.headers,
+                content = data.content
+            )
+            rules.add(rule)
+            ruleAddedListeners.forEach { it(rule) }
+        }
+
+        for (diff in analysis.diffs) {
+            if (diff.existing == null) {
+                // Brand-new collection: create it whole
+                val collection = diff.incoming.collection
+                collection.id = "collection_" + System.currentTimeMillis() + "_" + (Math.random() * 1000000).toInt().toString(36)
+                collections[collection.id] = collection
+                collectionAddedListeners.forEach { it(collection) }
+                result.collectionsCreated++
+                diff.incoming.rules.forEach { addRuleTo(collection.id, it) }
+                result.rulesAdded += diff.incoming.rules.size
+                continue
+            }
+
+            // Merge into the existing collection
+            diff.newRules.forEach { addRuleTo(diff.existing.id, it) }
+            result.rulesAdded += diff.newRules.size
+
+            for ((incoming, existing) in diff.changedRules) {
+                when (strategy) {
+                    ChangedRuleStrategy.REPLACE -> {
+                        existing.name = incoming.name
+                        existing.statusCode = incoming.statusCode
+                        existing.headers = incoming.headers
+                        existing.content = incoming.content
+                        result.rulesReplaced++
+                    }
+                    ChangedRuleStrategy.KEEP_BOTH -> {
+                        // Added DISABLED: two enabled rules with the same endpoint would
+                        // leave the imported one enabled-but-never-matching (first enabled
+                        // rule wins) and it would be silently auto-disabled on next load.
+                        addRuleTo(diff.existing.id, incoming, nameSuffix = " (imported)", enabledOverride = false)
+                        result.rulesKeptBoth++
+                    }
+                    ChangedRuleStrategy.SKIP -> result.rulesSkipped++
+                }
+            }
+            result.rulesSkipped += diff.identicalRules.size
+        }
+
+        logger.info(
+            "📥 Merge import: +${result.collectionsCreated} collection(s), +${result.rulesAdded} rule(s), " +
+                    "${result.rulesReplaced} replaced, ${result.rulesKeptBoth} kept-both, ${result.rulesSkipped} skipped"
+        )
+        return result
+    }
+
     /**
      * Data class representing a Mockk rule.
      * All properties are var with defaults for XML serialization.

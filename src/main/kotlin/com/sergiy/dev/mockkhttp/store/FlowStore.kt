@@ -15,6 +15,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 class FlowStore(project: Project) {
 
     private val logger = MockkHttpLogger.getInstance(project)
+    private val settings = SettingsStore.getInstance(project)
 
     // Thread-safe storage for flows
     private val flows = ConcurrentHashMap<String, HttpFlowData>()
@@ -36,18 +37,73 @@ class FlowStore(project: Project) {
             return project.getService(FlowStore::class.java)
         }
 
-        // Maximum number of flows to keep in memory
-        private const val MAX_FLOWS = 1000
+        /** Marker appended to bodies truncated at retention time. */
+        const val TRUNCATION_MARKER = "[truncated by MockkHttp cache"
+
+        /** Whether a stored body was truncated by the retention cache. */
+        fun isBodyTruncated(content: String?): Boolean =
+            content?.contains(TRUNCATION_MARKER) == true
     }
+
+    /** Configurable retention limit (Settings → Cache). */
+    fun maxFlows(): Int = settings.getMaxFlowsRetained()
+
+    /**
+     * Truncate oversized bodies before RETAINING a flow, so long sessions can't
+     * accumulate gigabytes of response payloads in IDE memory. The live Debug
+     * dialog operates on the original flow — only the stored copy is trimmed.
+     */
+    private fun trimForRetention(flow: HttpFlowData): HttpFlowData {
+        val maxBytes = settings.getMaxStoredBodyKb() * 1024
+        val requestContent = flow.request.content
+        val responseContent = flow.response?.content
+
+        val trimRequest = requestContent.length > maxBytes
+        val trimResponse = responseContent != null && responseContent.length > maxBytes
+        if (!trimRequest && !trimResponse) return flow
+
+        fun truncate(content: String): String =
+            content.take(maxBytes) +
+                    "\n… $TRUNCATION_MARKER: kept ${maxBytes / 1024} KB of ${content.length / 1024} KB — raise the limit in Settings → Cache]"
+
+        return flow.copy(
+            request = if (trimRequest) flow.request.copy(content = truncate(requestContent)) else flow.request,
+            response = if (trimResponse) flow.response!!.copy(content = truncate(responseContent!!)) else flow.response
+        )
+    }
+
+    /**
+     * Estimated memory used by retained flows (body + header text sizes).
+     */
+    fun getEstimatedMemoryBytes(): Long {
+        var total = 0L
+        for (flow in flows.values) {
+            total += flow.request.content.length + flow.request.url.length
+            total += flow.request.headers.entries.sumOf { it.key.length + it.value.length }
+            flow.response?.let { response ->
+                total += response.content.length
+                total += response.headers.entries.sumOf { it.key.length + it.value.length }
+            }
+        }
+        // Strings are UTF-16 in the JVM: ~2 bytes per char
+        return total * 2
+    }
+
+    /** Number of retained flows. */
+    fun getFlowCount(): Int = flowOrder.size
 
     /**
      * Add a new flow to the store.
      */
-    fun addFlow(flow: HttpFlowData) {
-        logger.debug("Adding flow to store: ${flow.flowId}")
+    fun addFlow(rawFlow: HttpFlowData) {
+        logger.debug("Adding flow to store: ${rawFlow.flowId}")
 
-        // Check if flow already exists (update case)
-        val isUpdate = flows.containsKey(flow.flowId)
+        val flow = trimForRetention(rawFlow)
+
+        // Check if flow already exists (update case) — capture the previous
+        // value BEFORE overwriting so the paused counter stays accurate
+        val previousFlow = flows[flow.flowId]
+        val isUpdate = previousFlow != null
 
         // Add/update flow
         flows[flow.flowId] = flow
@@ -62,7 +118,8 @@ class FlowStore(project: Project) {
             }
 
             // Enforce max size
-            while (flowOrder.size > MAX_FLOWS) {
+            val maxFlows = maxFlows()
+            while (flowOrder.size > maxFlows) {
                 val oldestId = flowOrder.removeAt(0)
                 val removed = flows.remove(oldestId)
                 logger.debug("Removed oldest flow: $oldestId")
@@ -86,11 +143,10 @@ class FlowStore(project: Project) {
             // Updated flow
             logger.debug("Flow updated: ${flow.flowId}")
 
-            // Update paused count
-            val oldFlow = flows[flow.flowId]
-            if (oldFlow?.paused == true && !flow.paused) {
+            // Update paused count (previousFlow captured before the overwrite)
+            if (previousFlow?.paused == true && !flow.paused) {
                 pausedFlowsCount--
-            } else if (oldFlow?.paused == false && flow.paused) {
+            } else if (previousFlow?.paused == false && flow.paused) {
                 pausedFlowsCount++
             }
 

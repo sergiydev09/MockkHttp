@@ -21,17 +21,20 @@ class MockkHttpDioInterceptor extends Interceptor {
 
   /// Create a MockkHttp dio interceptor.
   ///
-  /// Package name is auto-detected on Android — no need to pass it.
+  /// Package/bundle id is auto-detected on Android and iOS — no need to pass it.
   ///
   /// [port] - Plugin port (default: 9876)
-  /// [packageName] - Override auto-detected package name (rarely needed)
+  /// [packageName] - Override auto-detected package/bundle id (rarely needed)
+  /// [host] - Override the plugin host. Not needed on emulators/simulators;
+  ///   for a physical iOS device pass your Mac's LAN IP (e.g. '192.168.1.50').
   MockkHttpDioInterceptor({
     int port = 9876,
     String? packageName,
     String? projectId,
+    String? host,
     MockkHttpPluginClient? client,
   }) : _core = MockkHttpCore(
-          client: (client ?? MockkHttpPluginClient(port: port))
+          client: (client ?? MockkHttpPluginClient(port: port, host: host))
             ..setPackageName(packageName ?? MockkHttp.autoDetectPackageName()),
           packageName: packageName ?? MockkHttp.autoDetectPackageName(),
           projectId: projectId,

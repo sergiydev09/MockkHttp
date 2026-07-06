@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'ios_bundle_info.dart';
 import 'mockk_http_client.dart';
 import 'http_overrides.dart';
 import 'models.dart';
@@ -131,33 +132,47 @@ class MockkHttpCore {
 class MockkHttp {
   MockkHttp._();
 
-  static const String version = '1.5.4';
+  static const String version = '1.6.0';
 
   /// Initialize MockkHttp with global [HttpOverrides].
   ///
   /// This intercepts ALL HTTP traffic from `dart:io` HttpClient,
   /// including packages like `http` that use it internally.
   ///
-  /// Call this before `runApp()`. Only works on Android emulators.
+  /// Call this before `runApp()`. Works on Android emulators, iOS Simulators
+  /// (Apple Silicon or Intel), and physical iOS devices (with [host]).
   ///
   /// [port] - Plugin port (default: 9876)
-  /// [packageName] - Override auto-detected package name (rarely needed)
+  /// [packageName] - Override auto-detected package/bundle id (rarely needed)
+  /// [host] - Override the plugin host. Not needed on emulators/simulators.
+  ///   For a PHYSICAL iOS device pass your Mac's LAN IP, e.g.
+  ///   `MockkHttp.init(host: '192.168.1.50')`, and add
+  ///   `NSLocalNetworkUsageDescription` to the app's Info.plist (iOS 14+
+  ///   shows a local-network permission prompt on first connection).
   static void init({
     int port = 9876,
     String? packageName,
+    String? host,
   }) {
     final resolvedPackage = packageName ?? autoDetectPackageName();
 
+    final client = MockkHttpPluginClient(port: port, host: host);
+
     assert(() {
       print('┌──────────────────────────────────────────────');
-      print('│ MockkHttp v$version');
+      print('│ MockkHttp v$version (${_platformLabel()})');
       print('│ Package: ${resolvedPackage ?? "unknown"}');
-      print('│ Host: ${MockkHttpPluginClient.emulatorHost}:$port');
+      print('│ Host: ${client.host}:$port');
+      if (Platform.isIOS &&
+          !MockkHttpPluginClient.isIosSimulator &&
+          host == null) {
+        print('│ ⚠️ Physical iOS device without host: pass your');
+        print('│    Mac\'s LAN IP: MockkHttp.init(host: "192.168.x.x")');
+      }
       print('└──────────────────────────────────────────────');
       return true;
     }());
 
-    final client = MockkHttpPluginClient(port: port);
     client.setPackageName(resolvedPackage);
     final core = MockkHttpCore(client: client, packageName: resolvedPackage);
     MockkHttpOverrides.install(core);
@@ -166,33 +181,70 @@ class MockkHttp {
     _writeMarkerFile(resolvedPackage);
   }
 
-  /// Auto-detect package name from the Android process.
-  /// On Android, /proc/self/cmdline contains the package name.
-  static String? autoDetectPackageName() {
-    if (!Platform.isAndroid) return null;
+  static String _platformLabel() {
+    if (Platform.isAndroid) return 'Android';
+    if (Platform.isIOS) {
+      return MockkHttpPluginClient.isIosSimulator ? 'iOS Simulator' : 'iOS Device';
+    }
+    return Platform.operatingSystem;
+  }
 
-    try {
-      final cmdline = File('/proc/self/cmdline').readAsStringSync();
-      // cmdline is null-terminated, take first segment
-      final packageName = cmdline.split('\x00').first.trim();
-      if (packageName.isNotEmpty && packageName.contains('.')) {
-        return packageName;
+  /// Auto-detect the app identifier for the current platform.
+  /// - Android: /proc/self/cmdline contains the package name.
+  /// - iOS: the process environment carries `__CFBundleIdentifier`.
+  static String? autoDetectPackageName() {
+    if (Platform.isAndroid) {
+      try {
+        final cmdline = File('/proc/self/cmdline').readAsStringSync();
+        // cmdline is null-terminated, take first segment
+        final packageName = cmdline.split('\x00').first.trim();
+        if (packageName.isNotEmpty && packageName.contains('.')) {
+          return packageName;
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    if (Platform.isIOS) {
+      // Env vars first (present on some launch paths)...
+      final bundleId = Platform.environment['__CFBundleIdentifier'];
+      if (bundleId != null && bundleId.isNotEmpty) return bundleId;
+
+      final xpcName = Platform.environment['XPC_SERVICE_NAME'];
+      if (xpcName != null && xpcName.startsWith('UIKitApplication:')) {
+        final raw = xpcName.substring('UIKitApplication:'.length);
+        final end = raw.indexOf('[');
+        final id = (end > 0 ? raw.substring(0, end) : raw).trim();
+        if (id.isNotEmpty) return id;
       }
-    } catch (_) {}
+
+      // ...but on recent iOS runtimes Platform.environment is EMPTY, so the
+      // reliable source is the app's own Info.plist (next to the executable).
+      return readIosBundleIdentifier();
+    }
+
     return null;
   }
 
-  /// Write a marker file to /data/local/tmp/ so the plugin's AppManager
-  /// can detect Flutter apps with MockkHttp via `adb shell ls`.
-  /// This is writable by any app and readable by ADB.
+  /// Write a marker file so the IntelliJ plugin can detect this app.
+  /// - Android: `/data/local/tmp/mockk_http_{pkg}` (readable via `adb shell ls`).
+  /// - iOS Simulator: `{data container}/Documents/.mockk_http` — the plugin
+  ///   finds it via `xcrun simctl get_app_container {udid} {bundleid} data`.
   static void _writeMarkerFile(String? packageName) {
-    if (packageName == null || !Platform.isAndroid) return;
+    if (packageName == null) return;
 
     try {
-      final marker = File('/data/local/tmp/mockk_http_$packageName');
-      marker.writeAsStringSync('flutter');
+      if (Platform.isAndroid) {
+        final marker = File('/data/local/tmp/mockk_http_$packageName');
+        marker.writeAsStringSync('flutter');
+      } else if (Platform.isIOS) {
+        final home = Platform.environment['HOME'];
+        if (home == null || home.isEmpty) return;
+        final marker = File('$home/Documents/.mockk_http');
+        marker.writeAsStringSync('flutter:$packageName');
+      }
     } catch (_) {
-      // Non-critical — detection falls back to grep
+      // Non-critical — detection falls back to PING announcements
     }
   }
 

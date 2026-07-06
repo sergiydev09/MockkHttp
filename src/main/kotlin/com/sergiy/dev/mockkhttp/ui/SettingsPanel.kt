@@ -42,6 +42,11 @@ class SettingsPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val verboseLoggingCheckbox: JCheckBox
     private val autoStartCheckbox: JCheckBox
 
+    // Cache management
+    private val maxFlowsField: JBTextField
+    private val maxBodyKbField: JBTextField
+    private val cacheUsageLabel: JBLabel
+
     init {
         logger.info("Initializing Settings Panel...")
 
@@ -228,6 +233,55 @@ class SettingsPanel(private val project: Project) : JPanel(BorderLayout()) {
         contentPanel.add(optionsPanel)
         contentPanel.add(Box.createVerticalStrut(15))
 
+        // ========== CACHE & MEMORY SECTION ==========
+        // Long sessions used to accumulate unbounded flow bodies + logs in IDE
+        // memory, which slowed down Android Studio. These limits keep it snappy.
+        val cachePanel = JPanel(GridBagLayout()).apply {
+            border = createSectionBorder("Cache & Memory")
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+
+        gbc.gridwidth = 1
+        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+        cachePanel.add(JBLabel("Max retained flows:"), gbc)
+        maxFlowsField = JBTextField(settingsStore.getMaxFlowsRetained().toString(), 6)
+        gbc.gridx = 1; gbc.weightx = 0.0
+        cachePanel.add(maxFlowsField, gbc)
+        gbc.gridx = 2; gbc.weightx = 1.0
+        cachePanel.add(JBLabel("(oldest flows are dropped beyond this)").apply {
+            foreground = JBColor.GRAY
+        }, gbc)
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
+        cachePanel.add(JBLabel("Max stored body size (KB):"), gbc)
+        maxBodyKbField = JBTextField(settingsStore.getMaxStoredBodyKb().toString(), 6)
+        gbc.gridx = 1; gbc.weightx = 0.0
+        cachePanel.add(maxBodyKbField, gbc)
+        gbc.gridx = 2; gbc.weightx = 1.0
+        cachePanel.add(JBLabel("(larger bodies are truncated in the flow list)").apply {
+            foreground = JBColor.GRAY
+        }, gbc)
+
+        cacheUsageLabel = JBLabel(" ")
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2
+        cachePanel.add(cacheUsageLabel, gbc)
+
+        val cacheButtonsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 5, 0)).apply {
+            add(JButton("Refresh Usage").apply {
+                addActionListener { refreshCacheUsage() }
+            })
+            add(JButton("Clear Flows && Logs").apply {
+                toolTipText = "Free memory now: clears the intercepted flow list and the plugin logs (mock rules are NOT touched)"
+                addActionListener { clearCaches() }
+            })
+        }
+        gbc.gridx = 2; gbc.gridy = 2; gbc.gridwidth = 1
+        cachePanel.add(cacheButtonsPanel, gbc)
+        gbc.gridwidth = 1
+
+        contentPanel.add(cachePanel)
+        contentPanel.add(Box.createVerticalStrut(15))
+
         // ========== HELP SECTION ==========
         val helpPanel = JPanel(BorderLayout()).apply {
             border = createSectionBorder("Troubleshooting")
@@ -282,6 +336,7 @@ class SettingsPanel(private val project: Project) : JPanel(BorderLayout()) {
             validateAdbPath()
             validateSdkPath()
             updateDetectedPaths()
+            refreshCacheUsage()
         }
 
         logger.info("✅ Settings Panel initialized")
@@ -431,6 +486,29 @@ class SettingsPanel(private val project: Project) : JPanel(BorderLayout()) {
         settingsStore.setAutoStartInterceptor(autoStartCheckbox.isSelected)
     }
 
+    private fun saveCacheSettings() {
+        maxFlowsField.text.trim().toIntOrNull()?.let { settingsStore.setMaxFlowsRetained(it) }
+        maxBodyKbField.text.trim().toIntOrNull()?.let { settingsStore.setMaxStoredBodyKb(it) }
+        // Reflect the clamped values back into the fields
+        maxFlowsField.text = settingsStore.getMaxFlowsRetained().toString()
+        maxBodyKbField.text = settingsStore.getMaxStoredBodyKb().toString()
+    }
+
+    private fun refreshCacheUsage() {
+        val flowStore = com.sergiy.dev.mockkhttp.store.FlowStore.getInstance(project)
+        val memoryMb = flowStore.getEstimatedMemoryBytes() / (1024.0 * 1024.0)
+        cacheUsageLabel.text = String.format(
+            "In memory: %d flow(s) ≈ %.1f MB · %d log entries",
+            flowStore.getFlowCount(), memoryMb, logger.getLogCount()
+        )
+    }
+
+    private fun clearCaches() {
+        com.sergiy.dev.mockkhttp.store.FlowStore.getInstance(project).clearAllFlows()
+        logger.clear()
+        refreshCacheUsage()
+    }
+
     private fun applyAllChanges() {
         logger.info("⚙️ Applying all settings changes...")
 
@@ -439,6 +517,7 @@ class SettingsPanel(private val project: Project) : JPanel(BorderLayout()) {
         savePort()
         saveVerboseLogging()
         saveAutoStart()
+        saveCacheSettings()
 
         JOptionPane.showMessageDialog(
             this,

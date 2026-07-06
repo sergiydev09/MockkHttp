@@ -45,7 +45,16 @@ class SettingsStore(private val project: Project) : PersistentStateComponent<Set
         var verboseLogging: Boolean = false,
 
         // Auto-start interceptor when project opens
-        var autoStartInterceptor: Boolean = false
+        var autoStartInterceptor: Boolean = false,
+
+        // ===== Cache management (keeps the IDE responsive on long sessions) =====
+
+        // Maximum intercepted flows kept in memory
+        var maxFlowsRetained: Int = 300,
+
+        // Bodies larger than this are truncated when RETAINED in the flow list
+        // (the live Debug dialog always sees the full body)
+        var maxStoredBodyKb: Int = 512
     )
 
     override fun getState(): State {
@@ -97,6 +106,16 @@ class SettingsStore(private val project: Project) : PersistentStateComponent<Set
         return currentState.autoStartInterceptor
     }
 
+    /**
+     * Maximum number of intercepted flows retained in memory.
+     */
+    fun getMaxFlowsRetained(): Int = currentState.maxFlowsRetained.coerceIn(10, 10_000)
+
+    /**
+     * Maximum retained body size in KB (larger bodies are truncated in the flow list).
+     */
+    fun getMaxStoredBodyKb(): Int = currentState.maxStoredBodyKb.coerceIn(16, 10_240)
+
     // ========== SETTERS ==========
 
     /**
@@ -145,6 +164,24 @@ class SettingsStore(private val project: Project) : PersistentStateComponent<Set
     fun setAutoStartInterceptor(enabled: Boolean) {
         currentState.autoStartInterceptor = enabled
         logger.info("⚙️ Auto-start interceptor ${if (enabled) "enabled" else "disabled"}")
+        notifySettingsChanged()
+    }
+
+    /**
+     * Set the maximum number of retained flows.
+     */
+    fun setMaxFlowsRetained(max: Int) {
+        currentState.maxFlowsRetained = max.coerceIn(10, 10_000)
+        logger.info("⚙️ Max retained flows set to: ${currentState.maxFlowsRetained}")
+        notifySettingsChanged()
+    }
+
+    /**
+     * Set the maximum retained body size in KB.
+     */
+    fun setMaxStoredBodyKb(kb: Int) {
+        currentState.maxStoredBodyKb = kb.coerceIn(16, 10_240)
+        logger.info("⚙️ Max stored body size set to: ${currentState.maxStoredBodyKb} KB")
         notifySettingsChanged()
     }
 

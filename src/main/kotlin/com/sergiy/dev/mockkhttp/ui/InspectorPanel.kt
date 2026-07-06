@@ -31,11 +31,13 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val logger = MockkHttpLogger.getInstance(project)
     private val emulatorManager = EmulatorManager.getInstance(project)
     private val appManager = AppManager.getInstance(project)
+    private val simulatorManager = com.sergiy.dev.mockkhttp.ios.SimulatorManager.getInstance(project)
     private val okHttpInterceptorServer = OkHttpInterceptorServer.getInstance(project)
     private val flowStore = FlowStore.getInstance(project)
 
     // UI Components
     private val emulatorComboBox: ComboBox<EmulatorInfo>
+    private val refreshDevicesButton: JButton
     private val appComboBox: ComboBox<AppInfo>
     private val refreshAppsButton: JButton
     private val recordingRadio: JRadioButton
@@ -59,6 +61,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     @Volatile
     private var refreshingDeviceSerial: String? = null
 
+    // Suppresses combo action events while refreshEmulators() rebuilds the device list, so
+    // the transient auto-selection of index 0 can't queue an app scan for the wrong device.
+    private var isRebuildingDeviceCombo = false
+
     enum class Mode {
         STOPPED,
         RECORDING,      // Recording without debug
@@ -79,13 +85,22 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 ): java.awt.Component {
                     super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
                     if (value is EmulatorInfo) {
-                        val typeIcon = if (value.isEmulator) "📱" else "📲"
-                        text = "$typeIcon ${value.displayName} (API ${value.apiLevel})"
+                        val typeIcon = when (value.platform) {
+                            DevicePlatform.ANDROID -> if (value.isEmulator) "📱" else "📲"
+                            DevicePlatform.IOS_SIMULATOR -> "🍎"
+                            DevicePlatform.IOS_DEVICE -> "🍏"
+                        }
+                        text = "$typeIcon ${value.displayName} (${value.versionLabel})"
                     }
                     return this
                 }
             }
             addActionListener { onEmulatorSelected() }
+        }
+
+        refreshDevicesButton = JButton(AllIcons.Actions.Refresh).apply {
+            toolTipText = "Refresh Devices (Android + iOS)"
+            addActionListener { refreshEmulators() }
         }
 
         appComboBox = ComboBox<AppInfo>().apply {
@@ -238,6 +253,13 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         flowStore.addFlowAddedListener { flow ->
             SwingUtilities.invokeLater {
                 allFlows.add(flow)
+                // Keep the local mirror bounded like the store, otherwise flows
+                // evicted from FlowStore would still be pinned in memory here
+                val maxFlows = flowStore.maxFlows()
+                while (allFlows.size > maxFlows) {
+                    val evicted = allFlows.removeAt(0)
+                    flowListModel.removeElement(evicted)
+                }
                 // Apply filter
                 if (matchesSearchQuery(flow, searchQuery)) {
                     flowListModel.addElement(flow)
@@ -314,6 +336,8 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 add(emulatorComboBox.apply {
                     maximumSize = Dimension(250, preferredSize.height)
                 })
+                add(Box.createHorizontalStrut(5))
+                add(refreshDevicesButton)
                 add(Box.createHorizontalStrut(15))
 
                 add(JBLabel("App: "))
@@ -401,35 +425,68 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun refreshEmulators() {
         val previousSelection = selectedEmulator
 
-        // Run ADB operation in background to avoid blocking EDT
+        // Run ADB/simctl operations in background to avoid blocking EDT
         object : Task.Backgroundable(project, "Refreshing Devices...", false) {
-            private var devices: List<EmulatorInfo> = emptyList()
+            private var androidDevices: List<EmulatorInfo> = emptyList()
+            private var bootedSimulators: List<EmulatorInfo>? = emptyList()
+            private var iosDevices: List<EmulatorInfo>? = emptyList()
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                devices = emulatorManager.getConnectedDevices()
+                // Android (ADB) + iOS Simulators (simctl) + physical iOS devices (devicectl).
+                // The iOS enumerations return null on TOOLING failure (vs a genuine empty list).
+                androidDevices = emulatorManager.getConnectedDevices()
+                bootedSimulators = simulatorManager.getBootedSimulators()
+                iosDevices = simulatorManager.getConnectedIosDevices()
             }
 
             override fun onSuccess() {
                 // Update UI on EDT
-                emulatorComboBox.removeAllItems()
-                devices.forEach { device ->
-                    emulatorComboBox.addItem(device)
+                val iosEnumerationFailed = bootedSimulators == null || iosDevices == null
+                var devices = androidDevices +
+                        (bootedSimulators ?: emptyList()) +
+                        (iosDevices ?: emptyList())
+
+                // A transient simctl/devicectl failure must NOT look like a disconnection:
+                // iOS capture runs over a plain socket and doesn't depend on that tooling.
+                // Keep the previously selected iOS device in the list instead of stopping.
+                if (previousSelection != null &&
+                    previousSelection.platform != DevicePlatform.ANDROID &&
+                    iosEnumerationFailed &&
+                    devices.none { it.serialNumber == previousSelection.serialNumber }
+                ) {
+                    logger.warn("⚠️ iOS device enumeration failed transiently; keeping ${previousSelection.displayName} selected")
+                    devices = devices + previousSelection
                 }
 
-                // Try to restore previous selection if the device is still connected
-                if (previousSelection != null && devices.any { it.serialNumber == previousSelection.serialNumber }) {
-                    val index = devices.indexOfFirst { it.serialNumber == previousSelection.serialNumber }
-                    if (index >= 0) {
-                        emulatorComboBox.selectedIndex = index
-                        logger.debug("Restored device selection: ${previousSelection.displayName}")
+                // Rebuild the combo with events suppressed, so the transient auto-selection of
+                // the first added item can't queue an app scan for the wrong device.
+                isRebuildingDeviceCombo = true
+                try {
+                    emulatorComboBox.removeAllItems()
+                    devices.forEach { device ->
+                        emulatorComboBox.addItem(device)
                     }
-                } else if (devices.isNotEmpty() && selectedEmulator == null) {
-                    // Only auto-select first if nothing was selected before
-                    emulatorComboBox.selectedIndex = 0
-                    logger.debug("Auto-selected first device")
-                } else if (previousSelection != null && devices.none { it.serialNumber == previousSelection.serialNumber }) {
-                    // Previously selected device is now disconnected
+
+                    val restoreIndex = previousSelection
+                        ?.let { prev -> devices.indexOfFirst { it.serialNumber == prev.serialNumber } }
+                        ?: -1
+                    when {
+                        restoreIndex >= 0 -> {
+                            emulatorComboBox.selectedIndex = restoreIndex
+                            logger.debug("Restored device selection: ${previousSelection?.displayName}")
+                        }
+                        previousSelection == null && devices.isNotEmpty() -> {
+                            emulatorComboBox.selectedIndex = 0
+                            logger.debug("Auto-selected first device")
+                        }
+                    }
+                } finally {
+                    isRebuildingDeviceCombo = false
+                }
+
+                if (previousSelection != null && devices.none { it.serialNumber == previousSelection.serialNumber }) {
+                    // Previously selected device is genuinely disconnected
                     logger.warn("⚠️ Previously selected device disconnected")
                     selectedEmulator = null
                     selectedApp = null
@@ -439,12 +496,19 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         logger.warn("⚠️ Stopping interceptor due to device disconnection")
                         stop()
                     }
+                    updateButtonStates()
+                    return
                 }
+
+                // Apply the effective selection exactly once (queues the app scan for the
+                // right device only)
+                onEmulatorSelected()
             }
         }.queue()
     }
 
     private fun onEmulatorSelected() {
+        if (isRebuildingDeviceCombo) return
         selectedEmulator = emulatorComboBox.selectedItem as? EmulatorInfo
         selectedEmulator?.let { emulator ->
             logger.info("📱 Emulator selected: ${emulator.fullDescription}")
@@ -475,18 +539,49 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 indicator.isIndeterminate = true
                 indicator.text = "Scanning for apps with MockkHttp..."
 
-                // getInstalledApps already returns only apps with MockkHttp (batch optimized)
-                mockkHttpApps = appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
+                mockkHttpApps = when (emulator.platform) {
+                    // Android: getInstalledApps already returns only apps with MockkHttp
+                    DevicePlatform.ANDROID ->
+                        appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
+                    // iOS Simulator: all user apps, MockkHttp-enabled ones flagged/sorted first
+                    DevicePlatform.IOS_SIMULATOR ->
+                        simulatorManager.getInstalledApps(emulator)
+                    // Physical iOS device: devicectl best effort, PING-announced fallback
+                    DevicePlatform.IOS_DEVICE ->
+                        simulatorManager.getInstalledAppsPhysical(emulator)
+                }
             }
 
             override fun onSuccess() {
-                refreshingDeviceSerial = null
+                // Only release the guard if it still belongs to this scan
+                if (refreshingDeviceSerial == emulator.serialNumber) {
+                    refreshingDeviceSerial = null
+                }
+
+                // Discard stale results: the user (or a device refresh) may have switched
+                // devices while this scan was running — never mix apps across devices.
+                if (selectedEmulator?.serialNumber != emulator.serialNumber) {
+                    logger.debug("Discarding app scan results for ${emulator.displayName} (no longer selected)")
+                    refreshAppsButton.isEnabled = selectedEmulator != null
+                    return
+                }
 
                 // Update UI on EDT
                 logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp")
 
+                // Clear at apply-time too: guards against results from an earlier scan of a
+                // different device having been applied in between.
+                appComboBox.removeAllItems()
+
                 if (mockkHttpApps.isEmpty()) {
-                    logger.warn("⚠️ No apps with MockkHttp found. Make sure you've added the Gradle plugin to your app.")
+                    when (emulator.platform) {
+                        DevicePlatform.ANDROID ->
+                            logger.warn("⚠️ No apps with MockkHttp found. Make sure you've added the Gradle plugin to your app.")
+                        DevicePlatform.IOS_SIMULATOR ->
+                            logger.warn("⚠️ No user apps found on this simulator. Install your Flutter app first.")
+                        DevicePlatform.IOS_DEVICE ->
+                            logger.warn("⚠️ No apps detected. Start your Flutter app with MockkHttp.init(host: '<Mac LAN IP>') so it announces itself, then refresh.")
+                    }
                 } else {
                     mockkHttpApps.forEach { app ->
                         appComboBox.addItem(app)
@@ -499,7 +594,9 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
 
             override fun onThrowable(error: Throwable) {
-                refreshingDeviceSerial = null
+                if (refreshingDeviceSerial == emulator.serialNumber) {
+                    refreshingDeviceSerial = null
+                }
                 logger.error("Failed to scan apps: ${error.message}")
                 refreshAppsButton.isEnabled = selectedEmulator != null
             }
@@ -617,13 +714,18 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         logger.warn("⚠️  No app selected, will receive ALL flows from all apps")
                     }
 
-                    // Set up ADB reverse for physical devices
+                    // Set up ADB reverse for physical ANDROID devices only.
+                    // iOS Simulators share the Mac's loopback (127.0.0.1 reaches the plugin
+                    // directly), and physical iOS devices connect via the Mac's LAN IP —
+                    // neither needs (nor supports) port forwarding.
                     val device = selectedEmulator
-                    if (device != null && !device.isEmulator) {
-                        logger.info("📲 Physical device detected, setting up ADB reverse port forwarding...")
+                    if (device != null && device.platform == DevicePlatform.ANDROID && !device.isEmulator) {
+                        logger.info("📲 Physical Android device detected, setting up ADB reverse port forwarding...")
                         if (!emulatorManager.setupAdbReverse(device.serialNumber, OkHttpInterceptorServer.SERVER_PORT, OkHttpInterceptorServer.SERVER_PORT)) {
                             throw Exception("Failed to set up ADB reverse port forwarding. Make sure the device is connected via USB with USB debugging enabled.")
                         }
+                    } else if (device != null && device.platform == DevicePlatform.IOS_DEVICE) {
+                        logger.info("🍏 Physical iOS device: make sure the app was started with MockkHttp.init(host: '<this Mac's LAN IP>')")
                     }
 
                     // Map mode to OkHttpInterceptorServer.Mode
@@ -697,9 +799,9 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     okHttpInterceptorServer.stop()
                     logger.info("🔌 Stopped OkHttp Interceptor Server")
 
-                    // Clean up ADB reverse for physical devices
+                    // Clean up ADB reverse for physical ANDROID devices only
                     val device = selectedEmulator
-                    if (device != null && !device.isEmulator) {
+                    if (device != null && device.platform == DevicePlatform.ANDROID && !device.isEmulator) {
                         emulatorManager.removeAdbReverse(device.serialNumber, OkHttpInterceptorServer.SERVER_PORT)
                     }
 
@@ -851,7 +953,32 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
+    /**
+     * Warn before creating mocks from flows whose stored body was truncated by the
+     * retention cache — the mock would serve an incomplete body to the app.
+     * Returns true to proceed.
+     */
+    private fun confirmTruncatedBodies(flows: List<HttpFlowData>): Boolean {
+        val truncatedCount = flows.count { FlowStore.isBodyTruncated(it.response?.content) }
+        if (truncatedCount == 0) return true
+
+        val result = JOptionPane.showConfirmDialog(
+            this,
+            "$truncatedCount of ${flows.size} selected flow(s) have a body TRUNCATED by the cache\n" +
+                    "(Settings → Cache → Max stored body size). A mock created from them would\n" +
+                    "serve an incomplete body to your app.\n\n" +
+                    "Tip: raise the limit and re-capture the call to mock the full body.\n\n" +
+                    "Create the mock(s) anyway?",
+            "Truncated Body",
+            JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE
+        )
+        return result == JOptionPane.YES_OPTION
+    }
+
     private fun createMockFromFlow(flow: HttpFlowData) {
+        if (!confirmTruncatedBodies(listOf(flow))) return
+
         // Use selected app's package name to filter collections
         val packageName = selectedApp?.packageName
         val dialog = CreateMockDialog(
@@ -865,6 +992,8 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun createMocksFromFlows(flows: List<HttpFlowData>) {
+        if (!confirmTruncatedBodies(flows)) return
+
         // Use selected app's package name to filter collections
         val packageName = selectedApp?.packageName
         val dialog = BatchCreateMockDialog(
