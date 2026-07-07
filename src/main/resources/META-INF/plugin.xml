@@ -13,34 +13,43 @@
     <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
     <description><![CDATA[
-        <h2>Network Traffic Interceptor for Android Development</h2>
+        <h2>Network Traffic Interceptor for Android &amp; Flutter Development</h2>
         <p>
-            Capture and inspect HTTP/HTTPS traffic from your Android applications using OkHttp interceptors.
-            Perfect for debugging, testing, and understanding your app's network behavior.
+            Capture, debug and mock HTTP/HTTPS traffic from Android and Flutter apps — including Flutter on iOS Simulators.
+            Everything happens inside the app via lightweight interceptors: no proxy, no certificates, no root.
         </p>
+
+        <h3>Supported Platforms:</h3>
+        <ul>
+            <li><strong>Android (native):</strong> any OkHttp/Retrofit app — the interceptor is auto-injected by the Gradle plugin; emulators and physical devices</li>
+            <li><strong>Flutter (Android):</strong> the <code>mockk_http</code> package intercepts <code>dart:io</code> HttpClient, <code>package:http</code> and <code>dio</code></li>
+            <li><strong>Flutter (iOS):</strong> iOS Simulators work with zero config; physical iPhones via <code>MockkHttp.init(host: ...)</code></li>
+        </ul>
 
         <h3>Key Features:</h3>
         <ul>
-            <li><strong>Zero-Config Interception:</strong> Automatically injects interceptor via Gradle plugin - no code changes needed</li>
-            <li><strong>Real-Time Traffic Inspection:</strong> View all HTTP requests and responses as they happen</li>
-            <li><strong>Mock Rule Management:</strong> Create and apply mock responses for API testing</li>
-            <li><strong>Export/Import Flows:</strong> Save captured traffic as JSON for documentation or sharing</li>
-            <li><strong>Debug Build Only:</strong> Interceptor is automatically excluded from release builds</li>
-            <li><strong>Failsafe Design:</strong> Gracefully falls back if plugin server is not running</li>
+            <li><strong>Recording Mode:</strong> view all HTTP requests and responses in real time, with search, request/response bodies and copy-as-cURL</li>
+            <li><strong>Debug Mode:</strong> pause any request and edit the response (status, headers, body) before the app receives it</li>
+            <li><strong>Mockk Mode:</strong> auto-apply mock rules — the app gets the mock without hitting the real server</li>
+            <li><strong>Mock Collections:</strong> organize rules in collections, enable/disable with one click, export/import as JSON with smart merge</li>
+            <li><strong>Zero-Config Interception:</strong> Gradle plugin injects the interceptor automatically — no code changes needed</li>
+            <li><strong>Works with Certificate Pinning:</strong> interception happens inside the app, so there is no TLS man-in-the-middle to break pinning</li>
+            <li><strong>Debug Builds Only:</strong> automatically excluded from release builds (multiple security layers)</li>
+            <li><strong>Failsafe Design:</strong> if the plugin server is not running, requests pass through untouched</li>
         </ul>
 
-        <h3>Setup (2 Steps):</h3>
-        <ol>
-            <li>Add the Gradle plugin to your app's <code>build.gradle.kts</code></li>
-            <li>Add the interceptor dependency (debug only)</li>
-        </ol>
+        <h3>Setup:</h3>
+        <ul>
+            <li><strong>Android:</strong> add the <code>io.github.sergiydev09.mockkhttp</code> Gradle plugin to your app — that's it, no dependencies to declare</li>
+            <li><strong>Flutter:</strong> add <code>mockk_http</code> to <code>pubspec.yaml</code> and call <code>MockkHttp.init()</code></li>
+        </ul>
         <p>See the Help tab in the tool window for detailed setup instructions.</p>
 
         <h3>Requirements:</h3>
         <ul>
-            <li>Android app using OkHttp (Retrofit uses OkHttp internally)</li>
-            <li>Android emulator or device</li>
-            <li>Gradle plugin version 7.0+ recommended</li>
+            <li>IntelliJ IDEA / Android Studio 2024.3 or newer</li>
+            <li><strong>Android:</strong> Android SDK platform-tools (ADB); emulator or physical device (API 21+)</li>
+            <li><strong>iOS (Flutter):</strong> macOS with Xcode 15+ for Simulators; physical devices best-effort</li>
         </ul>
 
         <h3>Use Cases:</h3>
@@ -55,6 +64,7 @@
         <p>
             <strong>Note:</strong> This tool is designed for development and testing purposes only.
             The interceptor only works in debug builds and has minimal performance impact.
+            Native iOS (Swift/URLSession) apps are not supported yet — iOS coverage is via Flutter.
         </p>
     ]]></description>
 

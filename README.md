@@ -6,12 +6,13 @@
 
 **Network Interceptor Plugin for Android Studio & IntelliJ IDEA**
 
-Intercept and modify HTTP/HTTPS traffic from Android applications in real-time
+Intercept, debug and mock HTTP/HTTPS traffic from Android and Flutter apps (Android & iOS) in real-time
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-IntelliJ-orange.svg)](https://www.jetbrains.com/idea/)
-[![Version](https://img.shields.io/badge/version-1.4.31-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.6.1-green.svg)]()
 [![Gradle Plugin](https://img.shields.io/badge/Gradle%20Plugin-io.github.sergiydev09.mockkhttp-blue)](https://plugins.gradle.org/plugin/io.github.sergiydev09.mockkhttp)
+[![pub.dev](https://img.shields.io/pub/v/mockk_http.svg?label=mockk_http)](https://pub.dev/packages/mockk_http)
 
 </div>
 
@@ -19,22 +20,26 @@ Intercept and modify HTTP/HTTPS traffic from Android applications in real-time
 
 ## 🎯 Features
 
-- **🔴 Recording Mode**: Captures all HTTP/HTTPS requests without pausing execution
+- **🔴 Recording Mode**: Captures all HTTP/HTTPS requests (including request bodies) without pausing execution
 - **🐛 Debug Mode**: Pauses requests in real-time and allows editing responses before delivering them to the app
 - **📋 Mockk Mode**: Applies mock rules automatically based on request patterns
-- **⚡ Zero Configuration**: No proxy setup, certificates, or iptables required
+- **🤖 Android**: Any OkHttp/Retrofit app — interceptor auto-injected via Gradle plugin (emulators & physical devices)
+- **🐦 Flutter**: The [`mockk_http`](https://pub.dev/packages/mockk_http) package intercepts `HttpClient`, `package:http` and `dio` — on Android **and iOS**
+- **🍎 iOS Simulators**: Flutter apps on booted Simulators connect with zero config (physical iPhones via `host:` parameter)
+- **📦 Mock Collections**: Organize rules in collections, enable/disable with one click, export/import as JSON with smart merge
+- **⚡ Zero Configuration**: No proxy setup, certificates, or iptables required — works even with certificate pinning
 - **🔒 Debug-Only**: Automatically excluded from release builds (multiple security layers)
 - **💉 Automatic Injection**: Gradle plugin injects interceptor via bytecode transformation
-- **🍎 Cross-Platform**: Works on macOS (Intel & Apple Silicon), Windows, and Linux
+- **🖥️ Cross-Platform IDE**: Works on macOS (Intel & Apple Silicon), Windows, and Linux
 
 ---
 
 ## 📋 Requirements
 
-- **IntelliJ IDEA 2025.1+** or **Android Studio Ladybug (2024.2+)**
-- **Android SDK** with platform-tools (ADB)
-- **Android Emulator** (API Level 21+)
-- Your app must use **OkHttp** (Retrofit uses OkHttp internally)
+- **IntelliJ IDEA 2024.3+** or an **Android Studio release based on 2024.3+**
+- **Android:** Android SDK with platform-tools (ADB); emulator or physical device (API Level 21+); app using **OkHttp** (Retrofit uses OkHttp internally)
+- **Flutter:** the [`mockk_http`](https://pub.dev/packages/mockk_http) package (works with `HttpClient`, `package:http` and `dio`)
+- **iOS (Flutter):** macOS with **Xcode 15+** — iOS Simulators work with zero config; physical iPhones are best-effort via `MockkHttp.init(host: ...)`
 
 ---
 
@@ -42,7 +47,7 @@ Intercept and modify HTTP/HTTPS traffic from Android applications in real-time
 
 ### Step 1: Install the IntelliJ Plugin
 
-**Option A: From JetBrains Marketplace** (coming soon)
+**Option A: From JetBrains Marketplace**
 1. Open IDE
 2. `File` > `Settings` > `Plugins`
 3. Search for "MockkHttp"
@@ -54,10 +59,10 @@ Intercept and modify HTTP/HTTPS traffic from Android applications in real-time
 git clone https://github.com/sergiydev09/MockkHttp.git
 cd MockkHttp
 ./gradlew buildPlugin
-# Install build/distributions/MockkHttp-1.4.31.zip via Settings > Plugins > Install from Disk
+# Install build/distributions/MockkHttp-1.6.1.zip via Settings > Plugins > Install from Disk
 ```
 
-### Step 2: Add Gradle Plugin to Your App
+### Step 2 (Android): Add Gradle Plugin to Your App
 
 In your app's `build.gradle.kts`:
 
@@ -65,7 +70,7 @@ In your app's `build.gradle.kts`:
 plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.4.31"  // Add this
+    id("io.github.sergiydev09.mockkhttp") version "1.6.1"  // Add this
 }
 
 // That's it! No need to add dependencies manually.
@@ -75,6 +80,29 @@ plugins {
 The plugin will automatically:
 - Add the `mockk-http-interceptor` dependency to your debug builds
 - Inject the interceptor into all `OkHttpClient` instances via bytecode transformation
+
+### Step 2 (Flutter): Add the mockk_http Package
+
+In your app's `pubspec.yaml`:
+
+```yaml
+dependencies:
+  mockk_http: ^1.6.1
+```
+
+Then initialize it before running the app:
+
+```dart
+import 'package:mockk_http/mockk_http.dart';
+
+void main() {
+  MockkHttp.init(); // Intercepts HttpClient, package:http and any dart:io-based library
+  runApp(MyApp());
+}
+```
+
+Using [dio](https://pub.dev/packages/dio)? Add the interceptor instead: `dio.interceptors.add(MockkHttpDioInterceptor())`.
+See the [mockk_http README](flutter-package/README.md) for iOS Simulator (zero config), physical devices and debug-only setup.
 
 ---
 
@@ -87,8 +115,8 @@ The plugin will automatically:
 
 ### 2. Select Your Setup
 
-1. **Select Emulator** from the dropdown
-2. **Select App** from the dropdown (only shows apps using OkHttp)
+1. **Select Device** from the dropdown — Android emulators, physical Android devices and booted iOS Simulators all appear in the same list
+2. **Select App** from the dropdown (only shows apps with MockkHttp enabled)
 3. Choose a mode and click **Start**
 
 ### 3. Use Your App
@@ -180,12 +208,12 @@ The Gradle plugin scans your dependencies and **fails the build** if MockkHttp i
 // ❌ DON'T add the dependency manually - the plugin does it automatically!
 dependencies {
     // Don't do this - it's redundant and may cause conflicts
-    debugImplementation("com.github.sergiydev09.MockkHttp:mockk-http-interceptor:1.4.31")
+    debugImplementation("com.github.sergiydev09.MockkHttp:mockk-http-interceptor:1.6.1")
 }
 
 // ✅ Just apply the plugin - it handles everything
 plugins {
-    id("io.github.sergiydev09.mockkhttp") version "1.4.31"
+    id("io.github.sergiydev09.mockkhttp") version "1.6.1"
 }
 ```
 
@@ -522,7 +550,7 @@ pluginManagement {
 
 # In your test app's build.gradle.kts:
 plugins {
-    id("io.github.sergiydev09.mockkhttp") version "1.4.31"
+    id("io.github.sergiydev09.mockkhttp") version "1.6.1"
 }
 ```
 
@@ -574,6 +602,6 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 **⭐ If you find this project useful, give it a star on GitHub! ⭐**
 
-Made with ❤️ for Android developers
+Made with ❤️ for mobile developers
 
 </div>

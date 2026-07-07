@@ -11,11 +11,9 @@ All files that contain version numbers and must be updated on each release.
 
 ## Documentation and UI references
 - `build.gradle.kts` — `changeNotes` HTML: version in setup instructions (`version "X.Y.Z"`)
-- `src/main/kotlin/com/sergiy/dev/mockkhttp/ui/HelpPanel.kt` — multiple references:
-  - Version banner text (`MockkHttp vX.Y.Z`)
-  - Gradle plugin version in setup instructions (`version "X.Y.Z"`)
-  - Flutter package version (`mockk_http: ^X.Y.Z`)
-  - "Version X.Y.Z Stable Release" heading
+- `src/main/kotlin/com/sergiy/dev/mockkhttp/ui/HelpPanel.kt` — two constants in the companion object:
+  - `GRADLE_PLUGIN_VERSION` (Android setup snippet)
+  - `FLUTTER_PACKAGE_VERSION` (`mockk_http: ^X.Y.Z` snippet)
 - `flutter-package/README.md` — `mockk_http: ^X.Y.Z`
 - `flutter-package/CHANGELOG.md` — new version section at top
 

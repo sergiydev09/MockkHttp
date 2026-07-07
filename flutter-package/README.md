@@ -2,12 +2,12 @@
 
 Flutter package for the [MockkHttp IntelliJ/Android Studio plugin](https://github.com/sergiydev09/MockkHttp). Intercept, record, debug, and mock HTTP responses in real-time — no proxy, no certificates, no root required.
 
-> **Note:** Currently only works on **Android emulators**. Physical device and iOS support are planned for future releases.
+> **Supported targets:** **Android emulators** and **iOS Simulators** work with zero config. Physical devices are supported by passing `host:` — see [Physical devices](#physical-devices).
 
 ## Requirements
 
 - [MockkHttp IntelliJ plugin](https://github.com/sergiydev09/MockkHttp) installed in Android Studio or IntelliJ IDEA
-- Android emulator running on the same machine
+- An Android emulator or a booted iOS Simulator on the same machine (physical devices: see below)
 
 ## Getting started
 
@@ -16,7 +16,7 @@ Flutter package for the [MockkHttp IntelliJ/Android Studio plugin](https://githu
 
 ```yaml
 dependencies:
-  mockk_http: ^1.6.0
+  mockk_http: ^1.6.1
 ```
 
 ## Usage
@@ -59,12 +59,26 @@ void main() {
 }
 ```
 
+## Physical devices
+
+**iPhone:** pass your Mac's LAN IP (both devices on the same Wi-Fi) and add `NSLocalNetworkUsageDescription` to `ios/Runner/Info.plist`:
+
+```dart
+MockkHttp.init(host: '192.168.1.23'); // your Mac's LAN IP
+```
+
+**Android device (best effort):** forward the port with `adb reverse tcp:9876 tcp:9876` (the MockkHttp IDE plugin sets this up automatically when a physical Android device is selected) and point the host at the device loopback:
+
+```dart
+MockkHttp.init(host: '127.0.0.1');
+```
+
 ## Features
 
 - **Recording mode** - Capture all HTTP traffic and inspect it in the plugin
 - **Debug mode** - Pause requests and modify responses before they reach your app
 - **Mock mode** - Auto-apply mock rules defined in the plugin
-- **Zero config** - Package name and host are auto-detected
+- **Zero config** - Package/bundle id and plugin host are auto-detected per platform (Android emulator: `10.0.2.2`; iOS Simulator: `127.0.0.1`)
 
 ## How it works
 

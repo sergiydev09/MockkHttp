@@ -15,6 +15,7 @@ import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import com.sergiy.dev.mockkhttp.model.ModifiedResponseData
+import com.sergiy.dev.mockkhttp.store.ErrorPresetsStore
 import com.sergiy.dev.mockkhttp.store.MockkRulesStore
 import java.awt.*
 import java.awt.event.KeyEvent
@@ -30,7 +31,7 @@ import javax.swing.text.Highlighter
  * Horizontal layout: Request (left) | Response (right, editable)
  */
 class DebugInterceptDialog(
-    project: Project,
+    private val project: Project,
     private val flow: HttpFlowData
 ) : DialogWrapper(project) {
 
@@ -57,6 +58,9 @@ class DebugInterceptDialog(
 
     // Feedback label for the saved-mock picker (null when there are no saved mocks)
     private var mockAppliedLabel: JLabel? = null
+
+    // Quick error-response preset buttons (rebuilt whenever the presets may have changed)
+    private lateinit var presetsButtonsPanel: JPanel
 
     // Search functionality for Request panel
     private lateinit var requestTextArea: JTextArea
@@ -374,13 +378,79 @@ class DebugInterceptDialog(
     }
 
     /** Briefly swap a button's icon to a green check as click feedback, then revert. */
-    private fun flashApplied(button: JButton, originalIcon: Icon) {
+    private fun flashApplied(button: JButton, originalIcon: Icon?) {
         (button.getClientProperty("flashTimer") as? javax.swing.Timer)?.stop()
         button.icon = AllIcons.Actions.Checked
         val timer = javax.swing.Timer(900) { button.icon = originalIcon }
         timer.isRepeats = false
         button.putClientProperty("flashTimer", timer)
         timer.start()
+    }
+
+    // ========== Error-response presets ==========
+
+    /**
+     * Row of one-click canned responses (400, 401, 500...) plus an edit button.
+     * Clicking a preset fills status/headers/body; the document listeners then enable
+     * "Continue with Modified Response", so the user can still tweak before sending.
+     * The buttons live in a horizontal scroll pane so custom presets can never clip
+     * the row, and the edit button stays pinned on the right.
+     */
+    private fun createPresetsRow(): JComponent {
+        presetsButtonsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 3))
+        rebuildPresetButtons()
+
+        val scrollPane = JBScrollPane(
+            presetsButtonsPanel,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+        ).apply { border = JBUI.Borders.empty() }
+
+        val editButton = iconActionButton(AllIcons.General.Settings, "Edit presets (add, remove, customize)") {
+            ErrorPresetsDialog(project).showAndGet()
+            // Rebuild even on Cancel: another Debug dialog may have edited the shared store meanwhile
+            rebuildPresetButtons()
+        }
+
+        return JPanel(BorderLayout()).apply {
+            add(scrollPane, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, 4, 3)).apply { add(editButton) }, BorderLayout.EAST)
+        }
+    }
+
+    private fun rebuildPresetButtons() {
+        presetsButtonsPanel.removeAll()
+        presetsButtonsPanel.add(JLabel("Presets:"))
+        ErrorPresetsStore.getInstance().getPresets().forEach { preset ->
+            val presetName = preset.name
+            val button = JButton(presetName).apply {
+                toolTipText = "Apply preset (HTTP ${preset.statusCode}): fills status, headers and body — edit freely, then Continue"
+                isFocusable = false
+                margin = JBUI.insets(2, 6)
+            }
+            button.addActionListener {
+                // Resolve at click time: the app-level store may have been edited from another dialog
+                val current = ErrorPresetsStore.getInstance().getPresets().firstOrNull { it.name == presetName }
+                if (current != null) {
+                    applyErrorPreset(current)
+                    flashApplied(button, null)
+                } else {
+                    rebuildPresetButtons()
+                }
+            }
+            presetsButtonsPanel.add(button)
+        }
+        presetsButtonsPanel.revalidate()
+        presetsButtonsPanel.repaint()
+    }
+
+    /** Load a canned response into the editable fields (marks the response as modified). */
+    private fun applyErrorPreset(preset: ErrorPresetsStore.ErrorPreset) {
+        statusCodeField.text = preset.statusCode.toString()
+        headersTextArea.text = preset.headers
+        // Verbatim on purpose: presets may be intentionally malformed (e.g. broken JSON)
+        bodyTextArea.text = preset.body
+        logger.info("Applied response preset '${preset.name}' (HTTP ${preset.statusCode}) to intercepted response")
     }
 
     /**
@@ -464,9 +534,10 @@ class DebugInterceptDialog(
         val splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, topPanel, bodyPanel)
         splitPane.resizeWeight = 0.3
 
-        // Create main content with copy toolbar + search on top
+        // Create main content with copy toolbar + preset buttons + search on top
         val northPanel = JPanel(BorderLayout()).apply {
             add(createResponseCopyToolbar(), BorderLayout.NORTH)
+            add(createPresetsRow(), BorderLayout.CENTER)
             add(responseSearchPanel, BorderLayout.SOUTH)
         }
         val contentPanel = JPanel(BorderLayout())

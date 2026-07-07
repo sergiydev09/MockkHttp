@@ -7,10 +7,16 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import java.awt.BorderLayout
+import java.awt.CardLayout
 import java.awt.Color
 import java.awt.Desktop
+import java.awt.FlowLayout
 import java.net.URI
-import javax.swing.*
+import javax.swing.ButtonGroup
+import javax.swing.JEditorPane
+import javax.swing.JLabel
+import javax.swing.JPanel
+import javax.swing.JToggleButton
 
 /**
  * Extension function to convert Color to hex string.
@@ -20,18 +26,85 @@ private fun Color.toHex(): String {
 }
 
 /**
- * Help panel showing setup instructions for MockkHttp Interceptor.
+ * Help panel with a platform selector: pick Android (native) or Flutter (Android & iOS)
+ * and get a short 3-step setup guide for that platform.
  */
 class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
     private val logger = MockkHttpLogger.getInstance(project)
 
+    companion object {
+        // Versions shown in the setup snippets — keep in sync on releases (see VERSION_FILES.md)
+        private const val GRADLE_PLUGIN_VERSION = "1.6.1"
+        private const val FLUTTER_PACKAGE_VERSION = "1.6.1"
+
+        private const val CARD_ANDROID = "android"
+        private const val CARD_FLUTTER = "flutter"
+
+        private val FOOTER_HTML = """
+            <p style="margin-top: 16px;">
+                <a href="https://github.com/sergiydev09/MockkHttp">GitHub</a> ·
+                <a href="https://github.com/sergiydev09/MockkHttp/issues">Report an issue</a>
+            </p>
+        """.trimIndent()
+    }
+
     init {
         logger.info("Initializing Help Panel...")
 
-        border = JBUI.Borders.empty(15)
+        border = JBUI.Borders.empty(10)
 
-        // Get IDE theme colors
+        val cardLayout = CardLayout()
+        val cards = JPanel(cardLayout).apply {
+            add(createHelpCard(androidGuideHtml()), CARD_ANDROID)
+            add(createHelpCard(flutterGuideHtml()), CARD_FLUTTER)
+        }
+
+        val androidButton = JToggleButton("🤖 Android", true)
+        val flutterButton = JToggleButton("🐦 Flutter (Android & iOS)")
+        ButtonGroup().apply {
+            add(androidButton)
+            add(flutterButton)
+        }
+        androidButton.addActionListener { cardLayout.show(cards, CARD_ANDROID) }
+        flutterButton.addActionListener { cardLayout.show(cards, CARD_FLUTTER) }
+
+        val selectorPanel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4)).apply {
+            add(JLabel("My app is:"))
+            add(androidButton)
+            add(flutterButton)
+        }
+
+        add(selectorPanel, BorderLayout.NORTH)
+        add(cards, BorderLayout.CENTER)
+
+        logger.info("✅ Help Panel initialized")
+    }
+
+    private fun createHelpCard(html: String): JBScrollPane {
+        val textPane = JEditorPane("text/html", html).apply {
+            isEditable = false
+            isOpaque = false
+            addHyperlinkListener { e ->
+                if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) {
+                    try {
+                        Desktop.getDesktop().browse(URI(e.url.toString()))
+                    } catch (ex: Exception) {
+                        logger.error("Failed to open URL: ${e.url}", ex)
+                    }
+                }
+            }
+            caretPosition = 0
+        }
+        return JBScrollPane(textPane).apply {
+            border = JBUI.Borders.empty()
+        }
+    }
+
+    // ========== HTML content ==========
+
+    /** Wrap guide content with theme-aware styling shared by both platform cards. */
+    private fun htmlPage(content: String): String {
         val backgroundColor = UIUtil.getPanelBackground().toHex()
         val textColor = UIUtil.getLabelForeground().toHex()
         val linkColor = JBUI.CurrentTheme.Link.Foreground.ENABLED.toHex()
@@ -40,7 +113,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
         val noteBackground = JBColor(0xFFF9E6, 0x4A4A3A).toHex()
         val noteBorder = JBColor(0xFFC107, 0x8B7500).toHex()
 
-        val helpText = """
+        return """
             <html>
             <head>
                 <style>
@@ -51,18 +124,12 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                         background-color: $backgroundColor;
                         margin: 10px;
                     }
-                    h1 {
-                        color: $linkColor;
-                        font-size: 16px;
-                        font-weight: bold;
-                        margin-top: 0;
-                    }
                     h2 {
                         color: $linkColor;
                         font-size: 13px;
                         font-weight: bold;
-                        margin-top: 20px;
-                        margin-bottom: 8px;
+                        margin-top: 16px;
+                        margin-bottom: 6px;
                     }
                     code {
                         background-color: $codeBackground;
@@ -76,251 +143,90 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
                         font-family: Monospaced;
                         font-size: 11px;
                     }
-                    .step {
-                        margin: 8px 0;
-                    }
                     .note {
                         background-color: $noteBackground;
-                        padding: 10px;
+                        padding: 8px;
                         border: 1px solid $noteBorder;
-                        margin: 12px 0;
+                        margin: 10px 0;
                     }
-                    p {
-                        margin: 6px 0;
-                    }
-                    ul, ol {
-                        margin: 6px 0;
-                        padding-left: 20px;
-                    }
-                    li {
-                        margin: 4px 0;
-                    }
-                    a {
-                        color: $linkColor;
-                        text-decoration: none;
-                    }
-                    a:hover {
-                        text-decoration: underline;
-                    }
+                    p { margin: 6px 0; }
+                    ul { margin: 6px 0; padding-left: 20px; }
+                    li { margin: 3px 0; }
+                    a { color: $linkColor; text-decoration: none; }
                 </style>
             </head>
             <body>
-                <h1>🚀 MockkHttp Setup Guide</h1>
-
-                <div class="note">
-                    <strong>⚠️ IMPORTANT - Version 1.6.0 Stable Release</strong>
-                    <p>
-                        This version (1.6.0) includes automatic dependency injection - <strong>no need to add dependencies manually!</strong>
-                        Just apply the Gradle plugin and it handles everything.
-                    </p>
-                    <p>
-                        Features: True zero-config setup, PREFER_SETTINGS compatible, works everywhere with files() dependency.
-                    </p>
-                </div>
-
-                <p>
-                    MockkHttp uses an OkHttp Interceptor to capture network traffic from your Android app.
-                    Follow these steps to integrate it into your project.
-                </p>
-
-                <h2>📦 Step 1: Add the Gradle Plugin</h2>
-
-                <div class="step">
-                    <p><strong>In your app's <code>build.gradle.kts</code>:</strong></p>
-                    <pre>plugins {
-    id("com.android.application")
-    kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.5.4"
-}
-
-// That's it! No dependencies needed.
-// The plugin automatically handles everything.</pre>
-                    <p><em>The plugin automatically adds the interceptor dependency and injects it into all OkHttpClient instances.</em></p>
-                    <p><strong>⚠️ Do NOT add the dependency manually - the plugin does it for you!</strong></p>
-                </div>
-
-                <div class="note">
-                    <strong>🔒 SECURITY - Multiple Protection Layers:</strong>
-                    <ul>
-                        <li><strong>Build-time Check:</strong> Gradle plugin fails the build if MockkHttp is in <code>implementation</code> or <code>releaseImplementation</code></li>
-                        <li><strong>Bytecode Skip:</strong> Plugin automatically skips release variants</li>
-                        <li><strong>Runtime Check:</strong> Interceptor verifies <code>BuildConfig.DEBUG</code> and disables itself in release builds</li>
-                        <li><strong>ProGuard/R8:</strong> Strip rules remove any traces in release APKs</li>
-                    </ul>
-                    <p><strong>Result:</strong> MockkHttp is IMPOSSIBLE to include in production builds, even if you try!</p>
-                </div>
-
-                <h2>✅ Step 2: Build Your App</h2>
-
-                <div class="step">
-                    <p>Build and run your app in <strong>Debug mode</strong> on an emulator:</p>
-                    <pre>./gradlew assembleDebug
-./gradlew installDebug</pre>
-                </div>
-
-                <h2>📱 Step 3: Start Intercepting</h2>
-
-                <div class="step">
-                    <ol>
-                        <li>Select your emulator from the dropdown</li>
-                        <li>Select your app from the dropdown</li>
-                        <li>Click <strong>"Start Interceptor"</strong></li>
-                        <li>Launch your app and make network requests</li>
-                        <li>View captured traffic in the Inspector tab</li>
-                    </ol>
-                </div>
-
-                <h2>🔍 How It Works</h2>
-
-                <div class="step">
-                    <p>
-                        The Gradle plugin automatically injects the MockkHttp interceptor into all OkHttpClient
-                        instances in your app during the build process. The interceptor:
-                    </p>
-                    <ul>
-                        <li>Captures HTTP requests and responses</li>
-                        <li>Sends them to this IntelliJ plugin via socket connection</li>
-                        <li>Only active in Debug builds (no impact on Release)</li>
-                        <li>Falls back gracefully if plugin is not running</li>
-                    </ul>
-                </div>
-
-                <h2>❓ Troubleshooting</h2>
-
-                <div class="step">
-                    <p><strong>No flows appearing?</strong></p>
-                    <ul>
-                        <li>Make sure the Gradle plugin is applied in your <code>build.gradle.kts</code></li>
-                        <li>Rebuild your app: <code>./gradlew clean assembleDebug</code></li>
-                        <li>Check that your app is using OkHttp (Retrofit uses OkHttp internally)</li>
-                        <li>Verify the plugin server is running (green status)</li>
-                        <li>Check Logs tab for connection messages</li>
-                    </ul>
-                </div>
-
-                <div class="step">
-                    <p><strong>App crashes or network errors?</strong></p>
-                    <ul>
-                        <li>Make sure you're using the latest version of the interceptor</li>
-                        <li>Check that the emulator can reach host machine (10.0.2.2)</li>
-                        <li>Verify port 9876 is not blocked by firewall</li>
-                    </ul>
-                </div>
-
-                <h2>📚 Resources</h2>
-
-                <div class="step">
-                    <ul>
-                        <li><a href="https://github.com/sergiydev09/MockkHttp">GitHub Repository</a></li>
-                        <li><a href="https://github.com/sergiydev09/MockkHttp/issues">Report Issues</a></li>
-                        <li><a href="https://github.com/sergiydev09/MockkHttp/wiki">Documentation</a></li>
-                    </ul>
-                </div>
-
-                <h1>🦋 Flutter Setup Guide</h1>
-
-                <div class="note">
-                    <strong>⚠️ Flutter support requires manual initialization</strong>
-                    <p>
-                        Unlike Android native (auto-injection via Gradle plugin), Flutter apps need a single line
-                        of initialization code. The interceptor uses the same protocol and works with all plugin features.
-                    </p>
-                </div>
-
-                <h2>📦 Step 1: Add the Dependency</h2>
-
-                <div class="step">
-                    <p><strong>In your <code>pubspec.yaml</code>:</strong></p>
-                    <pre>dev_dependencies:
-  mockk_http: ^1.6.0</pre>
-                    <p><em>Using <code>dev_dependencies</code> ensures it won't be included in release builds.</em></p>
-                </div>
-
-                <h2>🔧 Step 2: Initialize</h2>
-
-                <div class="step">
-                    <p><strong>Option A: Global HttpOverrides (intercepts ALL HTTP traffic):</strong></p>
-                    <pre>import 'package:mockk_http/mockk_http.dart';
-
-void main() {
-  // Only in debug mode
-  assert(() {
-    MockkHttp.init();
-    return true;
-  }());
-
-  runApp(MyApp());
-}</pre>
-
-                    <p><strong>Option B: Dio Interceptor (recommended for Dio users):</strong></p>
-                    <pre>import 'package:mockk_http/mockk_http.dart';
-
-final dio = Dio();
-dio.interceptors.add(MockkHttpDioInterceptor());</pre>
-                </div>
-
-                <h2>📱 Step 3: Physical Device Setup</h2>
-
-                <div class="step">
-                    <p>For <strong>emulators</strong>: works automatically (uses 10.0.2.2).</p>
-                    <p>For <strong>physical devices</strong>: run ADB reverse port forwarding:</p>
-                    <pre>adb reverse tcp:9876 tcp:9876</pre>
-                </div>
-
-                <h2>✅ Step 4: Start Intercepting</h2>
-
-                <div class="step">
-                    <ol>
-                        <li>Select your emulator/device from the dropdown</li>
-                        <li>Select your Flutter app from the dropdown</li>
-                        <li>Click <strong>"Start Interceptor"</strong></li>
-                        <li>Use your app and make network requests</li>
-                        <li>View captured traffic in the Inspector tab</li>
-                    </ol>
-                </div>
-
-                <h2>🔍 Flutter: How It Works</h2>
-
-                <div class="step">
-                    <ul>
-                        <li><strong>HttpOverrides</strong> intercepts all <code>dart:io</code> HTTP traffic (package:http, etc.)</li>
-                        <li><strong>Dio Interceptor</strong> captures all Dio requests/responses</li>
-                        <li>Both use the same TCP socket protocol as the Android interceptor (port 9876)</li>
-                        <li>All modes work: Recording, Debug, Mockk, Mockk+Debug</li>
-                        <li>Request deduplication prevents duplicates from multiple HTTP clients</li>
-                    </ul>
-                </div>
-
-                <br/><br/>
-                <p style="color: #6c757d; font-size: 12px;">
-                    MockkHttp v1.6.0 | Android &amp; iOS (Flutter) | Built for Mobile Development
-                </p>
+            $content
+            $FOOTER_HTML
             </body>
             </html>
         """.trimIndent()
-
-        val textPane = JEditorPane("text/html", helpText).apply {
-            isEditable = false
-            isOpaque = false
-
-            // Enable hyperlink clicking
-            addHyperlinkListener { e ->
-                if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) {
-                    try {
-                        Desktop.getDesktop().browse(URI(e.url.toString()))
-                    } catch (ex: Exception) {
-                        logger.error("Failed to open URL: ${e.url}", ex)
-                    }
-                }
-            }
-        }
-
-        val scrollPane = JBScrollPane(textPane).apply {
-            border = JBUI.Borders.empty()
-        }
-
-        add(scrollPane, BorderLayout.CENTER)
-
-        logger.info("✅ Help Panel initialized")
     }
+
+    private fun androidGuideHtml(): String = htmlPage(
+        """
+        <h2>1 · Add the Gradle plugin</h2>
+        <p>In your app's <code>build.gradle.kts</code>:</p>
+        <pre>plugins {
+    id("com.android.application")
+    kotlin("android")
+    id("io.github.sergiydev09.mockkhttp") version "$GRADLE_PLUGIN_VERSION"
+}</pre>
+        <p>That's it — no dependencies to declare. The plugin injects the interceptor into every
+        <code>OkHttpClient</code> (Retrofit included) in <strong>debug builds only</strong>;
+        release builds are protected by build-time, bytecode, runtime and R8 checks.</p>
+
+        <h2>2 · Run your app</h2>
+        <p>Build and launch a <strong>debug</strong> build on an emulator or physical device
+        (port forwarding for physical devices is set up automatically).</p>
+
+        <h2>3 · Start intercepting</h2>
+        <p>In the <strong>Inspector</strong> tab: pick your device and app, choose a mode
+        (Recording / Debug / Mockk) and press <strong>Start</strong>. Traffic appears live.</p>
+
+        <div class="note">
+            <strong>No flows?</strong> Rebuild with <code>./gradlew clean assembleDebug</code>,
+            make sure the app uses OkHttp, and check the <strong>Logs</strong> tab.
+        </div>
+        """.trimIndent()
+    )
+
+    private fun flutterGuideHtml(): String = htmlPage(
+        """
+        <h2>1 · Add the package</h2>
+        <p>In your <code>pubspec.yaml</code>:</p>
+        <pre>dependencies:
+  mockk_http: ^$FLUTTER_PACKAGE_VERSION</pre>
+
+        <h2>2 · Initialize</h2>
+        <p>In <code>main()</code>, wrapped in <code>assert</code> so it is compiled out of release builds:</p>
+        <pre>import 'package:mockk_http/mockk_http.dart';
+
+void main() {
+  assert(() {
+    MockkHttp.init(); // HttpClient, package:http, and friends
+    return true;
+  }());
+  runApp(MyApp());
+}</pre>
+        <p>Using <strong>dio</strong>? Add its interceptor instead:
+        <code>dio.interceptors.add(MockkHttpDioInterceptor())</code></p>
+
+        <h2>3 · Run it &amp; start intercepting</h2>
+        <ul>
+            <li><strong>Android emulator</strong> and <strong>iOS Simulator</strong>: zero config — just run the app</li>
+            <li><strong>Physical iPhone</strong>: <code>MockkHttp.init(host: '&lt;your Mac's LAN IP&gt;')</code>
+                + <code>NSLocalNetworkUsageDescription</code> in <code>Info.plist</code> (same Wi-Fi)</li>
+            <li><strong>Physical Android</strong>: <code>adb reverse tcp:9876 tcp:9876</code>
+                + <code>MockkHttp.init(host: '127.0.0.1')</code></li>
+        </ul>
+        <p>Then in the <strong>Inspector</strong> tab: pick your device and app, choose a mode
+        (Recording / Debug / Mockk) and press <strong>Start</strong>.</p>
+
+        <div class="note">
+            <strong>No flows?</strong> Launch order doesn't matter (the app retries every 15s), but make
+            sure <code>MockkHttp.init()</code> runs before the first request and check the <strong>Logs</strong> tab.
+        </div>
+        """.trimIndent()
+    )
 }

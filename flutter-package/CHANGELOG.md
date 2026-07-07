@@ -1,3 +1,8 @@
+## 1.6.1
+
+- Docs: README now documents the real platform support — Android emulators and iOS Simulators with zero config, plus a new "Physical devices" section (iPhone via `MockkHttp.init(host: ...)` + `NSLocalNetworkUsageDescription`; Android via `adb reverse` + `host: '127.0.0.1'`).
+- No functional changes. Version aligned with the MockkHttp IntelliJ plugin 1.6.1 release.
+
 ## 1.6.0
 
 - Feature: iOS support. The plugin host is now resolved per platform — Android emulator (`10.0.2.2`), iOS Simulator (`127.0.0.1`, the simulator shares the Mac's network stack, zero config), physical iOS device (pass your Mac's LAN IP via `MockkHttp.init(host: ...)` / `MockkHttpDioInterceptor(host: ...)` and add `NSLocalNetworkUsageDescription` to Info.plist).
