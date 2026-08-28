@@ -695,7 +695,9 @@ class EmulatorManager(private val project: Project) {
      * Simple output receiver for shell commands.
      * Made package-private for use in other managers.
      */
-    class CollectingOutputReceiver : com.android.ddmlib.IShellOutputReceiver {
+    class CollectingOutputReceiver(
+        private val cancelled: () -> Boolean = { false }
+    ) : com.android.ddmlib.IShellOutputReceiver {
         private val outputBuilder = StringBuilder()
         
         val output: String
@@ -709,6 +711,13 @@ class EmulatorManager(private val project: Project) {
             // No-op
         }
         
-        override fun isCancelled(): Boolean = false
+        /**
+         * ddmlib polls this inside its socket read loop while a shell command is running:
+         * returning true breaks that loop and aborts the command *in flight*. Wiring it to
+         * a constant `false` (as it was) makes every executeShellCommand uninterruptible.
+         *
+         * Must never throw - it is a plain boolean probe, never ProgressManager.checkCanceled().
+         */
+        override fun isCancelled(): Boolean = cancelled()
     }
 }

@@ -10,7 +10,7 @@ Intercept, debug and mock HTTP/HTTPS traffic from Android and Flutter apps (Andr
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-IntelliJ-orange.svg)](https://www.jetbrains.com/idea/)
-[![Version](https://img.shields.io/badge/version-1.6.1-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.6.2-green.svg)]()
 [![Gradle Plugin](https://img.shields.io/badge/Gradle%20Plugin-io.github.sergiydev09.mockkhttp-blue)](https://plugins.gradle.org/plugin/io.github.sergiydev09.mockkhttp)
 [![pub.dev](https://img.shields.io/pub/v/mockk_http.svg?label=mockk_http)](https://pub.dev/packages/mockk_http)
 
@@ -59,7 +59,7 @@ Intercept, debug and mock HTTP/HTTPS traffic from Android and Flutter apps (Andr
 git clone https://github.com/sergiydev09/MockkHttp.git
 cd MockkHttp
 ./gradlew buildPlugin
-# Install build/distributions/MockkHttp-1.6.1.zip via Settings > Plugins > Install from Disk
+# Install build/distributions/MockkHttp-1.6.2.zip via Settings > Plugins > Install from Disk
 ```
 
 ### Step 2 (Android): Add Gradle Plugin to Your App

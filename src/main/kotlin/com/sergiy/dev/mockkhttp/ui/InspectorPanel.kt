@@ -58,12 +58,96 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private var selectedApp: AppInfo? = null
     private var currentMode: Mode = Mode.STOPPED
     private var searchQuery: String = ""
-    @Volatile
-    private var refreshingDeviceSerial: String? = null
+
+    // Serials whose app scan is in flight. A single-slot guard let A -> B -> A queue a second
+    // concurrent scan of A, doubling the adb connections the USB dispatcher caps at 3.
+    private val scanningSerials: MutableSet<String> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+
+    // The serial the user picked. Survives disconnection - it is the only memory of that
+    // choice, and without it a reconnect silently jumps to whatever sits at index 0.
+    private var lastSelectedSerial: String? = null
+
+    // Same for the app: an empty rescan nulls selectedApp, and without this the next scan
+    // would silently repoint a live capture session at whatever app sorts first.
+    private var lastSelectedPackage: String? = null
+
+    // Device whose apps currently populate appComboBox / selectedApp.
+    private var scannedAppsSerial: String? = null
+
+    // Serials whose scan the user cancelled. Cancelling must stick: otherwise the next ADB
+    // event immediately relaunches the very scan the user just stopped.
+    private val autoScanOptOut: MutableSet<String> = HashSet()
 
     // Suppresses combo action events while refreshEmulators() rebuilds the device list, so
     // the transient auto-selection of index 0 can't queue an app scan for the wrong device.
     private var isRebuildingDeviceCombo = false
+
+    // Same idea for the app combo: repopulating it must not look like the user deselecting
+    // the app, which would drop the package filter of a live capture session.
+    private var isRebuildingAppCombo = false
+
+    // Re-entrancy guard for the device refresh task: a single USB flap makes ddmlib fire
+    // disconnect + connect + N state changes, and each one used to queue another task.
+    @Volatile
+    private var refreshingDevices = false
+
+    // A manual refresh that lands while another one is in flight must not lose its intent.
+    @Volatile
+    private var pendingManualRefresh = false
+
+    /** Rolling event budget. EDT-only, so no synchronization needed. */
+    private class ScanBudget(var windowStartMs: Long, var attempts: Int)
+
+    // Cooldown anchored to the END of the last automatic scan of a serial, with exponential
+    // backoff. Counting *events* per window (the previous design) cannot bound this loop at
+    // all: a scan takes minutes, so the flap it provokes arrives long after the window has
+    // rolled over and every attempt looks like the first one.
+    private val lastAutoScanEndedMs = HashMap<String, Long>()
+    private val consecutiveAutoScans = HashMap<String, Int>()
+
+    // Second line of defence, still per event: the serial is not stable - with Wireless
+    // Debugging adbd hands out a new port on every reconnect, so a per-serial cooldown alone
+    // would be sidestepped by an endless supply of "new" devices.
+    private val globalScanBudget = ScanBudget(0L, 0)
+
+    // 0L = no burst pending. Bounds how long the debouncer may keep deferring a refresh.
+    private var pendingSinceMs = 0L
+
+    // Trailing-edge debouncer: collapses a burst of ddmlib device events into one refresh.
+    // javax.swing.Timer (not com.intellij.util.Alarm) because it fires on the EDT and needs
+    // no parent Disposable - InspectorPanel is a JPanel, not a Disposable.
+    private val deviceChangeDebouncer = Timer(DEVICE_CHANGE_DEBOUNCE_MS) {
+        doRefreshEmulators(auto = true)
+    }.apply {
+        isRepeats = false
+    }
+
+    private companion object {
+        const val DEVICE_CHANGE_DEBOUNCE_MS = 1500
+
+        // Cap on how long a burst may defer the refresh. Without it, a device flapping faster
+        // than the debounce interval starves the timer and the list never refreshes at all -
+        // which is precisely the "unstable ADB" case the debounce exists for.
+        const val DEVICE_CHANGE_MAX_WAIT_MS = 6_000L
+
+        // How many *automatic* scans of the same device we tolerate per window before handing
+        // control back to the user (1 initial + 2 rescans). A legitimate cable replug still
+        // works; an ADB that keeps flapping no longer re-triggers the scan forever.
+        const val MAX_AUTO_SCANS_PER_WINDOW_GLOBAL = 6
+        const val AUTO_SCAN_WINDOW_MS = 60_000L
+
+        // Minimum quiet time after an automatic scan ends before another one may start. Each
+        // consecutive automatic scan doubles it (up to the ceiling), so a permanently broken
+        // device converges towards silence instead of rescanning forever.
+        const val AUTO_SCAN_COOLDOWN_MS = 60_000L
+        const val MAX_AUTO_SCAN_COOLDOWN_MS = 15 * 60_000L
+
+        // TTL of the per-serial maps. Must exceed the largest decay threshold (2 x ceiling),
+        // or purging would delete the backoff state before the decay branch could ever run -
+        // silently resetting the ladder to zero instead of holding at the ceiling.
+        const val AUTO_SCAN_STATE_TTL_MS = 2 * MAX_AUTO_SCAN_COOLDOWN_MS + 60_000L
+    }
 
     enum class Mode {
         STOPPED,
@@ -95,12 +179,12 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     return this
                 }
             }
-            addActionListener { onEmulatorSelected() }
+            addActionListener { onEmulatorSelected(auto = false) }
         }
 
         refreshDevicesButton = JButton(AllIcons.Actions.Refresh).apply {
             toolTipText = "Refresh Devices (Android + iOS)"
-            addActionListener { refreshEmulators() }
+            addActionListener { refreshEmulators(auto = false) }
         }
 
         appComboBox = ComboBox<AppInfo>().apply {
@@ -122,7 +206,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         refreshAppsButton = JButton(AllIcons.Actions.Refresh).apply {
             toolTipText = "Refresh Apps"
             isEnabled = false
-            addActionListener { refreshApps() }
+            addActionListener { forceRefreshApps() }
         }
 
         // Create mode radio buttons
@@ -407,26 +491,63 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             logger.info("✅ ADB initialized successfully")
             updateStatus("Ready", JBColor.GREEN)
 
-            // Register device change listener for auto-refresh
+            // Register device change listener for auto-refresh.
+            // ddmlib fires disconnect + connect + several CHANGE_STATE callbacks for a single
+            // USB flap, so debounce instead of queueing a refresh task per callback.
             emulatorManager.addDeviceChangeListener {
                 SwingUtilities.invokeLater {
-                    logger.debug("Device change detected, refreshing emulators...")
-                    refreshEmulators()
+                    logger.debug("Device change detected, scheduling refresh...")
+                    scheduleDeviceRefresh()
                 }
             }
 
-            refreshEmulators()
+            refreshEmulators(auto = true)
         } else {
             logger.error("❌ Failed to initialize ADB")
             updateStatus("ADB initialization failed", JBColor.RED)
         }
     }
 
-    private fun refreshEmulators() {
+    /**
+     * Trailing-edge debounce with a maximum wait: a burst collapses into one refresh, but a
+     * device that keeps flapping still gets refreshed at least every DEVICE_CHANGE_MAX_WAIT_MS.
+     */
+    private fun scheduleDeviceRefresh() {
+        val now = System.currentTimeMillis()
+        if (pendingSinceMs == 0L) pendingSinceMs = now
+        if (now - pendingSinceMs >= DEVICE_CHANGE_MAX_WAIT_MS) {
+            deviceChangeDebouncer.stop()
+            doRefreshEmulators(auto = true)
+        } else {
+            deviceChangeDebouncer.restart()
+        }
+    }
+
+    /** Immediate entry point: startup and the manual refresh button. */
+    private fun refreshEmulators(auto: Boolean) {
+        deviceChangeDebouncer.stop()
+        doRefreshEmulators(auto)
+    }
+
+    private fun doRefreshEmulators(auto: Boolean) {
+        if (project.isDisposed) return
+        if (refreshingDevices) {
+            if (!auto) pendingManualRefresh = true
+            // Don't drop the event, just re-arm: the device list may have changed again.
+            // pendingSinceMs is deliberately kept, so the max-wait cap still applies.
+            deviceChangeDebouncer.restart()
+            return
+        }
+        refreshingDevices = true
+        pendingSinceMs = 0L
+        val userInitiated = !auto || pendingManualRefresh
+        pendingManualRefresh = false
+
         val previousSelection = selectedEmulator
+        val wantedSerial = previousSelection?.serialNumber ?: lastSelectedSerial
 
         // Run ADB/simctl operations in background to avoid blocking EDT
-        object : Task.Backgroundable(project, "Refreshing Devices...", false) {
+        object : Task.Backgroundable(project, "Refreshing Devices...", true) {
             private var androidDevices: List<EmulatorInfo> = emptyList()
             private var bootedSimulators: List<EmulatorInfo>? = emptyList()
             private var iosDevices: List<EmulatorInfo>? = emptyList()
@@ -468,17 +589,34 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         emulatorComboBox.addItem(device)
                     }
 
-                    val restoreIndex = previousSelection
-                        ?.let { prev -> devices.indexOfFirst { it.serialNumber == prev.serialNumber } }
+                    val restoreIndex = wantedSerial
+                        ?.let { serial -> devices.indexOfFirst { it.serialNumber == serial } }
                         ?: -1
                     when {
                         restoreIndex >= 0 -> {
                             emulatorComboBox.selectedIndex = restoreIndex
-                            logger.debug("Restored device selection: ${previousSelection?.displayName}")
+                            logger.debug("Restored device selection: ${devices[restoreIndex].displayName}")
                         }
-                        previousSelection == null && devices.isNotEmpty() -> {
+                        lastSelectedSerial == null && devices.isNotEmpty() -> {
                             emulatorComboBox.selectedIndex = 0
                             logger.debug("Auto-selected first device")
+                        }
+                        // A manual refresh is the user asking "show me what's there now", so
+                        // it forgets a device that never came back. Without this escape hatch,
+                        // Wireless Debugging (a fresh serial on every reconnect) would leave
+                        // the combo unselected forever and the advice in the status bar -
+                        // "press Refresh Devices" - could never work.
+                        userInitiated && devices.isNotEmpty() -> {
+                            lastSelectedSerial = null
+                            emulatorComboBox.selectedIndex = 0
+                            logger.info("📱 $wantedSerial is gone; selected ${devices[0].displayName} instead")
+                        }
+                        else -> {
+                            // The chosen device is still missing: undo the implicit selection
+                            // DefaultComboBoxModel makes when the first item is added, so we
+                            // never silently jump to a different device.
+                            emulatorComboBox.selectedIndex = -1
+                            logger.debug("Waiting for $lastSelectedSerial to come back; no device auto-selected")
                         }
                     }
                 } finally {
@@ -488,51 +626,199 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 if (previousSelection != null && devices.none { it.serialNumber == previousSelection.serialNumber }) {
                     // Previously selected device is genuinely disconnected
                     logger.warn("⚠️ Previously selected device disconnected")
-                    selectedEmulator = null
                     selectedApp = null
 
-                    // Stop interceptor if running
+                    // A manual refresh may already have picked a replacement above; read it
+                    // back from the combo so what we commit is what the user actually sees.
+                    val replacement = emulatorComboBox.selectedItem as? EmulatorInfo
+                    val notice = if (replacement == null) {
+                        "Device disconnected - reconnect it, then press Refresh Devices"
+                    } else {
+                        null
+                    }
+
+                    // Stop interceptor if running. stop() finishes asynchronously and paints
+                    // its own status, so hand it the notice instead of painting it here and
+                    // watching "Stopped" overwrite it a moment later.
                     if (currentMode != Mode.STOPPED) {
                         logger.warn("⚠️ Stopping interceptor due to device disconnection")
-                        stop()
+                        // Always the device that just vanished - it is the one holding the
+                        // adb reverse, and by the time stop() runs the selection may already
+                        // point at the replacement.
+                        if (notice != null) {
+                            stop(notice, JBColor.ORANGE, device = previousSelection)
+                        } else {
+                            stop(device = previousSelection)
+                        }
+                    } else if (notice != null) {
+                        updateStatus(notice, JBColor.ORANGE)
                     }
-                    updateButtonStates()
-                    return
+
+                    // The app list belonged to the device that just vanished. Clearing it
+                    // keeps the combo from showing a "selected" app while selectedApp is null
+                    // - which is what the user would otherwise see when the reconnect's
+                    // auto-scan is suppressed. After stop(), so the package filter of a live
+                    // session is never touched.
+                    appComboBox.removeAllItems()
+                    scannedAppsSerial = null
+
+                    if (replacement == null) {
+                        selectedEmulator = null
+                        updateButtonStates()
+                        return
+                    }
+
+                    // Fall through to the normal commit below: returning here would leave the
+                    // combo showing the replacement while selectedEmulator stayed null - every
+                    // control dead, right after the user pressed Refresh Devices.
+                    logger.info("📱 ${previousSelection.displayName} is gone; switching to ${replacement.displayName}")
                 }
 
                 // Apply the effective selection exactly once (queues the app scan for the
                 // right device only)
-                onEmulatorSelected()
+                onEmulatorSelected(auto = !userInitiated)
+            }
+
+            // Runs on the EDT for every outcome (success, failure and cancellation)
+            override fun onFinished() {
+                refreshingDevices = false
             }
         }.queue()
     }
 
-    private fun onEmulatorSelected() {
+    /**
+     * @param auto true when the selection comes from an ADB/device event rather than from the
+     *   user. Event-driven selections are rate-limited so a flapping ADB can't re-trigger the
+     *   app scan forever.
+     */
+    private fun onEmulatorSelected(auto: Boolean = false) {
         if (isRebuildingDeviceCombo) return
         selectedEmulator = emulatorComboBox.selectedItem as? EmulatorInfo
         selectedEmulator?.let { emulator ->
             logger.info("📱 Emulator selected: ${emulator.fullDescription}")
-            refreshApps()
+            lastSelectedSerial = emulator.serialNumber      // never overwritten with null
+            when {
+                !auto -> {
+                    clearAutoScanBrakes(emulator.serialNumber)   // the user picked this device
+                    refreshApps(auto = false)
+                }
+                emulator.serialNumber in autoScanOptOut -> {
+                    logger.debug("Auto-scan opted out for ${emulator.serialNumber} (user cancelled)")
+                    updateStatus("App scan cancelled - press Refresh Apps", JBColor.ORANGE)
+                }
+                // A device that ddmlib still lists but that is offline can only produce an
+                // empty scan. Skipping it keeps the app combo intact and costs no cooldown.
+                !isDeviceReadyForScan(emulator) -> {
+                    logger.debug("Device ${emulator.serialNumber} is not online yet - skipping auto-scan")
+                    updateStatus("Device offline - waiting...", JBColor.ORANGE)
+                }
+                allowAutoRescan(emulator.serialNumber) -> refreshApps(auto = true)
+                else -> {
+                    logger.warn(
+                        "⚠️ Auto-scan suppressed for ${emulator.serialNumber} (unstable ADB). " +
+                        "Press 'Refresh Apps' to retry."
+                    )
+                    updateStatus("App scan paused (unstable ADB) - press Refresh Apps", JBColor.ORANGE)
+                }
+            }
         }
         updateButtonStates()
     }
 
-    private fun refreshApps() {
+    /**
+     * Per-serial budget plus a global cap on *automatic* scans. The global cap matters because
+     * the serial is not stable - Wireless Debugging assigns a new port on every reconnect, and
+     * two serials taking turns would otherwise each get a fresh budget on every flap, leaving
+     * the feedback loop uncapped.
+     */
+    private fun allowAutoRescan(serial: String): Boolean {
+        val now = System.currentTimeMillis()
+
+        // With Wireless Debugging every reconnect brings a brand-new serial, so drop entries
+        // nobody has touched in a long time or the maps grow unbounded.
+        lastAutoScanEndedMs.entries.removeIf { now - it.value > AUTO_SCAN_STATE_TTL_MS }
+        consecutiveAutoScans.keys.retainAll(lastAutoScanEndedMs.keys)
+
+        val lastEnd = lastAutoScanEndedMs[serial]
+        if (lastEnd != null) {
+            val cooldown = cooldownFor(consecutiveAutoScans[serial] ?: 0)
+            when {
+                // A full quiet stretch means things calmed down: forget the backoff, otherwise
+                // a laptop that suspends a few times a day would end up with auto-scan off.
+                now - lastEnd > 2 * cooldown -> consecutiveAutoScans.remove(serial)
+                now - lastEnd < cooldown -> return false
+            }
+        }
+
+        // Rolling event cap, on top of the per-serial cooldown.
+        if (now - globalScanBudget.windowStartMs > AUTO_SCAN_WINDOW_MS) {
+            globalScanBudget.windowStartMs = now
+            globalScanBudget.attempts = 0
+        }
+        globalScanBudget.attempts += 1
+        return globalScanBudget.attempts <= MAX_AUTO_SCANS_PER_WINDOW_GLOBAL
+    }
+
+    /** Android devices can linger in the list while offline; only ADB can tell us. */
+    private fun isDeviceReadyForScan(emulator: EmulatorInfo): Boolean =
+        emulator.platform != DevicePlatform.ANDROID ||
+                emulatorManager.getDevice(emulator.serialNumber)?.isOnline == true
+
+    private fun cooldownFor(consecutiveScans: Int): Long =
+        minOf(AUTO_SCAN_COOLDOWN_MS shl minOf(consecutiveScans, 4), MAX_AUTO_SCAN_COOLDOWN_MS)
+
+    /** Clears every automatic-scan brake for [serial]: the user is asking for a scan now. */
+    private fun clearAutoScanBrakes(serial: String) {
+        lastAutoScanEndedMs.remove(serial)
+        consecutiveAutoScans.remove(serial)
+        autoScanOptOut.remove(serial)
+        globalScanBudget.windowStartMs = 0L
+        globalScanBudget.attempts = 0
+    }
+
+    /** Manual "Refresh Apps": clears the backoff (and any cancellation opt-out) and rescans. */
+    private fun forceRefreshApps() {
+        val serial = selectedEmulator?.serialNumber
+        if (serial != null && serial in scanningSerials) {
+            logger.warn("⚠️ A scan is already running on $serial - cancel it first (Stop scan)")
+            return
+        }
+        serial?.let { clearAutoScanBrakes(it) }
+        refreshApps(auto = false)
+    }
+
+    /** @param auto true when triggered by an ADB event rather than by the user. */
+    private fun refreshApps(auto: Boolean) {
         val emulator = selectedEmulator ?: return
 
-        // Prevent duplicate scans for the same device
-        if (refreshingDeviceSerial == emulator.serialNumber) {
+        // Prevent duplicate scans for the same device (atomic claim: a single-slot guard let
+        // A -> B -> A queue a second concurrent scan of A)
+        if (!scanningSerials.add(emulator.serialNumber)) {
             logger.debug("Already scanning apps on ${emulator.serialNumber}, skipping...")
             return
         }
-        refreshingDeviceSerial = emulator.serialNumber
 
-        // Disable button and show loading state
+        // Disable button and show loading state. Suppress the combo's action event: an empty
+        // combo would otherwise read as "user deselected the app" and drop the package filter
+        // of a live capture session, turning this project into a catch-all.
         refreshAppsButton.isEnabled = false
-        appComboBox.removeAllItems()
+        isRebuildingAppCombo = true
+        try {
+            appComboBox.removeAllItems()
+        } finally {
+            isRebuildingAppCombo = false
+        }
+
+        // The event is suppressed, so drop the stale app explicitly when the scan targets a
+        // different device: otherwise Start would launch with the previous device's package.
+        if (selectedApp != null && emulator.serialNumber != scannedAppsSerial) {
+            selectedApp = null
+            updateButtonStates()
+        }
+        scannedAppsSerial = emulator.serialNumber
 
         // Run ADB operation in background to avoid blocking EDT
-        object : Task.Backgroundable(project, "Scanning Apps...", false) {
+        object : Task.Backgroundable(project, "Scanning apps on ${emulator.displayName}...", true) {
             private var mockkHttpApps: List<AppInfo> = emptyList()
 
             override fun run(indicator: ProgressIndicator) {
@@ -542,36 +828,91 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 mockkHttpApps = when (emulator.platform) {
                     // Android: getInstalledApps already returns only apps with MockkHttp
                     DevicePlatform.ANDROID ->
-                        appManager.getInstalledApps(emulator.serialNumber, includeSystem = false)
+                        appManager.getInstalledApps(
+                            emulator.serialNumber,
+                            includeSystem = false,
+                            // Plain boolean probe: the indicator is a ThreadLocal of *this*
+                            // thread, so ProgressManager.checkCanceled() would be a silent
+                            // no-op inside the scan's Dispatchers.IO coroutines.
+                            isCancelled = { indicator.isCanceled },
+                            // The app the user last worked with must never lose the pull
+                            // budget race against packages that merely sort first.
+                            priorityPackages = setOfNotNull(lastSelectedPackage),
+                            onProgress = { done, total, pkg ->
+                                indicator.isIndeterminate = false
+                                indicator.fraction = done.toDouble() / total
+                                indicator.text2 = "$done/$total - $pkg"
+                            }
+                        )
                     // iOS Simulator: all user apps, MockkHttp-enabled ones flagged/sorted first
-                    DevicePlatform.IOS_SIMULATOR ->
+                    DevicePlatform.IOS_SIMULATOR -> {
+                        indicator.checkCanceled()
                         simulatorManager.getInstalledApps(emulator)
+                    }
                     // Physical iOS device: devicectl best effort, PING-announced fallback
-                    DevicePlatform.IOS_DEVICE ->
+                    DevicePlatform.IOS_DEVICE -> {
+                        indicator.checkCanceled()
                         simulatorManager.getInstalledAppsPhysical(emulator)
+                    }
                 }
             }
 
             override fun onSuccess() {
-                // Only release the guard if it still belongs to this scan
-                if (refreshingDeviceSerial == emulator.serialNumber) {
-                    refreshingDeviceSerial = null
-                }
-
                 // Discard stale results: the user (or a device refresh) may have switched
                 // devices while this scan was running — never mix apps across devices.
                 if (selectedEmulator?.serialNumber != emulator.serialNumber) {
                     logger.debug("Discarding app scan results for ${emulator.displayName} (no longer selected)")
-                    refreshAppsButton.isEnabled = selectedEmulator != null
                     return
                 }
 
                 // Update UI on EDT
                 logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp")
 
-                // Clear at apply-time too: guards against results from an earlier scan of a
-                // different device having been applied in between.
-                appComboBox.removeAllItems()
+                // Repopulate with events suppressed and reconcile once at the end: an
+                // automatic rescan must not look like the user deselecting the app.
+                // Restore by package name, remembered independently of selectedApp: an empty
+                // rescan nulls the latter, and falling back to index 0 afterwards would
+                // repoint a live capture session at a different app behind the user's back.
+                val previousPackage = selectedApp?.packageName ?: lastSelectedPackage
+                var leftUnselected = false
+                isRebuildingAppCombo = true
+                try {
+                    // Clear at apply-time too: guards against results from an earlier scan of
+                    // a different device having been applied in between.
+                    appComboBox.removeAllItems()
+                    mockkHttpApps.forEach { app ->
+                        appComboBox.addItem(app)
+                    }
+                    if (mockkHttpApps.isNotEmpty()) {
+                        val restore = mockkHttpApps.indexOfFirst { it.packageName == previousPackage }
+                        appComboBox.selectedIndex = when {
+                            restore >= 0 -> restore
+                            // Results can be legitimately incomplete (pull budget, timeouts),
+                            // so an automatic scan must never repoint the selection at some
+                            // other app - and a live session must never be repointed at all.
+                            previousPackage != null && (auto || currentMode != Mode.STOPPED) -> {
+                                leftUnselected = true
+                                -1
+                            }
+                            else -> 0
+                        }
+                    }
+                } finally {
+                    isRebuildingAppCombo = false
+                }
+
+                // An empty result means "this scan found nothing", not "the user deselected".
+                // Keep a live session's app so Stop and the mode controls stay usable.
+                if (mockkHttpApps.isNotEmpty() || currentMode == Mode.STOPPED) {
+                    onAppSelected()
+                }
+
+                // Say why the combo has entries but nothing selected - otherwise the disabled
+                // Start button looks like a bug rather than an incomplete scan.
+                if (leftUnselected) {
+                    logger.warn("⚠️ $previousPackage was not found in this scan - it may be incomplete")
+                    updateStatus("$previousPackage not found in this scan - press Refresh Apps", JBColor.ORANGE)
+                }
 
                 if (mockkHttpApps.isEmpty()) {
                     when (emulator.platform) {
@@ -582,29 +923,49 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         DevicePlatform.IOS_DEVICE ->
                             logger.warn("⚠️ No apps detected. Start your Flutter app with MockkHttp.init(host: '<Mac LAN IP>') so it announces itself, then refresh.")
                     }
-                } else {
-                    mockkHttpApps.forEach { app ->
-                        appComboBox.addItem(app)
-                    }
-                    appComboBox.selectedIndex = 0
                 }
+            }
 
-                // Re-enable button
-                refreshAppsButton.isEnabled = selectedEmulator != null
+            override fun onCancel() {
+                logger.warn("⚠️ App scan cancelled by user on ${emulator.displayName}")
+                // Make the cancellation stick: without this the next ADB event relaunches
+                // exactly the scan the user just stopped. Cleared by "Refresh Apps".
+                autoScanOptOut.add(emulator.serialNumber)
+                updateStatus("App scan cancelled - press Refresh Apps", JBColor.ORANGE)
             }
 
             override fun onThrowable(error: Throwable) {
-                if (refreshingDeviceSerial == emulator.serialNumber) {
-                    refreshingDeviceSerial = null
-                }
                 logger.error("Failed to scan apps: ${error.message}")
-                refreshAppsButton.isEnabled = selectedEmulator != null
             }
-        }.queue()
+
+            // IntelliJ does NOT call onSuccess() when a task is cancelled. onFinished() runs
+            // on the EDT for every outcome: releasing the guard only in onSuccess/onThrowable
+            // would leave it stuck after a cancel, making refreshApps() return early forever
+            // for this serial with the button permanently disabled.
+            override fun onFinished() {
+                scanningSerials.remove(emulator.serialNumber)
+
+                // Charge the cooldown when the scan ENDS, and only for scans that actually
+                // ran: events that bounced off the scanningSerials claim must cost nothing.
+                if (auto) {
+                    val serial = emulator.serialNumber
+                    lastAutoScanEndedMs[serial] = System.currentTimeMillis()
+                    consecutiveAutoScans[serial] = (consecutiveAutoScans[serial] ?: 0) + 1
+                }
+
+                // Don't advertise the button as ready while another device's scan is running.
+                updateButtonStates()
+            }
+        }
+            .setCancelText("Stop scan")
+            .setCancelTooltipText("Cancel the MockkHttp app scan on this device")
+            .queue()
     }
 
     private fun onAppSelected() {
+        if (isRebuildingAppCombo) return
         selectedApp = appComboBox.selectedItem as? AppInfo
+        selectedApp?.packageName?.let { lastSelectedPackage = it }   // never nulled
         updateButtonStates()
         updatePackageFilterIfRunning()
     }
@@ -613,11 +974,14 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         val hasSelection = selectedEmulator != null && selectedApp != null
         val isRunning = currentMode != Mode.STOPPED
 
-        refreshAppsButton.isEnabled = selectedEmulator != null
+        refreshAppsButton.isEnabled = selectedEmulator != null &&
+                selectedEmulator?.serialNumber !in scanningSerials
         recordingRadio.isEnabled = hasSelection
         mockkRadio.isEnabled = hasSelection
         debugCheckbox.isEnabled = hasSelection
-        startStopButton.isEnabled = hasSelection
+        // A running session must always be stoppable, even if a failed rescan wiped the app
+        // selection - otherwise the interceptor keeps capturing with no way to turn it off.
+        startStopButton.isEnabled = hasSelection || isRunning
 
         // Update button appearance based on state
         if (isRunning) {
@@ -682,7 +1046,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun updatePackageFilterIfRunning() {
         if (currentMode == Mode.STOPPED) return
 
-        val packageNameFilter = selectedApp?.packageName
+        // Never degrade a live session to catch-all: a null filter makes this project capture
+        // every app's flows and steal them from other open projects. A transient rescan that
+        // empties the combo must keep the previous filter instead.
+        val packageNameFilter = selectedApp?.packageName ?: return
         okHttpInterceptorServer.setPackageNameFilter(packageNameFilter)
     }
 
@@ -792,22 +1159,31 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         }.queue()
     }
 
-    private fun stop() {
+    /**
+     * @param finalStatus overrides the "Stopped" status text. stop() finishes asynchronously,
+     *   so a caller that paints its own message right after would be overwritten by this one.
+     */
+    private fun stop(
+        finalStatus: String? = null,
+        finalStatusColor: JBColor = JBColor.GRAY,
+        device: EmulatorInfo? = selectedEmulator
+    ) {
         object : Task.Backgroundable(project, "Stopping Interceptor Server", false) {
             override fun run(indicator: ProgressIndicator) {
                 try {
                     okHttpInterceptorServer.stop()
                     logger.info("🔌 Stopped OkHttp Interceptor Server")
 
-                    // Clean up ADB reverse for physical ANDROID devices only
-                    val device = selectedEmulator
+                    // Clean up ADB reverse for physical ANDROID devices only. The device is
+                    // captured on the EDT by the caller: re-reading selectedEmulator here would
+                    // race with a device switch and tear down the *new* device's reverse.
                     if (device != null && device.platform == DevicePlatform.ANDROID && !device.isEmulator) {
                         emulatorManager.removeAdbReverse(device.serialNumber, OkHttpInterceptorServer.SERVER_PORT)
                     }
 
                     SwingUtilities.invokeLater {
                         currentMode = Mode.STOPPED
-                        updateStatus("Stopped", JBColor.GRAY)
+                        updateStatus(finalStatus ?: "Stopped", finalStatusColor)
                         updateButtonStates()
                     }
 

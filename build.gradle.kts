@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.6.1"
+version = "1.6.2"
 
 repositories {
     mavenCentral()
@@ -64,6 +64,19 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>Version 1.6.2 - Physical Android Devices Fixed (Hotfix)</h3>
+            <ul>
+                <li><strong>📲 Physical Android devices work again:</strong> Scanning a USB-connected phone for MockkHttp apps used to saturate ADB — up to 10 concurrent shell connections plus a full APK download per package — which made the device drop offline, the scan return nothing and your app never show up in the app selector. Flutter apps on real hardware were effectively untestable.</li>
+                <li><strong>🚦 USB-aware throttling:</strong> Physical devices now use 3 concurrent ADB connections instead of 10 (emulators keep the original parallelism over loopback).</li>
+                <li><strong>📦 No more APK download storms:</strong> A cheap on-device probe rules out non-Flutter APKs before anything is transferred, oversized APKs are skipped, and each scan has a hard download budget — with slots reserved for the app you were last working with, so it is never crowded out.</li>
+                <li><strong>🛑 The scan is cancellable:</strong> "Stop scan" now really aborts shell commands and APK transfers in flight, and the cancellation sticks instead of being relaunched by the next ADB event.</li>
+                <li><strong>🔁 No more rescan loops:</strong> Device events are debounced and automatic rescans back off exponentially, so an unstable cable can no longer re-trigger the scan forever.</li>
+                <li><strong>🎯 Your selection is remembered:</strong> Device and app selections survive disconnects and partial scans — a rescan can no longer silently repoint a running capture session at a different app, and a running session is always stoppable.</li>
+                <li><strong>📊 Honest reporting:</strong> Timeouts and skipped checks are reported as inconclusive instead of silently reading as "this app has no MockkHttp", with progress shown per package.</li>
+                <li><strong>🧠 Lower memory use:</strong> Flutter payloads are scanned as a stream instead of loading a whole 100&nbsp;MB kernel_blob.bin into the IDE heap.</li>
+            </ul>
+            <p><em>Gradle plugin, Android library and the mockk_http Flutter package are unchanged — keep using 1.6.1.</em></p>
+
             <h3>Version 1.6.1 - Error Response Presets & Redesigned Help</h3>
             <ul>
                 <li><strong>🎯 Response Presets (Debug mode):</strong> One-click canned responses — 400, 401, 403, 404, 429, 500, 503, empty body and malformed JSON — fill the paused response instantly. Fully customizable: add, remove and edit presets from the new editor (gear button next to the presets row)</li>
