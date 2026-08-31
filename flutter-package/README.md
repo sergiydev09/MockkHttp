@@ -16,7 +16,7 @@ Flutter package for the [MockkHttp IntelliJ/Android Studio plugin](https://githu
 
 ```yaml
 dependencies:
-  mockk_http: ^1.6.1
+  mockk_http: ^1.7.0
 ```
 
 ## Usage
@@ -67,7 +67,7 @@ void main() {
 MockkHttp.init(host: '192.168.1.23'); // your Mac's LAN IP
 ```
 
-**Android device (best effort):** forward the port with `adb reverse tcp:9876 tcp:9876` (the MockkHttp IDE plugin sets this up automatically when a physical Android device is selected) and point the host at the device loopback:
+**Physical Android device:** nothing to do with `mockk_http >= 1.7.0` and the MockkHttp IDE plugin 1.7.0+ — the plugin opens `adb reverse tcp:9876 tcp:9876` when it scans the device, and the package discovers the host by itself. On an older plugin, forward the port manually and pin the host:
 
 ```dart
 MockkHttp.init(host: '127.0.0.1');
@@ -78,7 +78,7 @@ MockkHttp.init(host: '127.0.0.1');
 - **Recording mode** - Capture all HTTP traffic and inspect it in the plugin
 - **Debug mode** - Pause requests and modify responses before they reach your app
 - **Mock mode** - Auto-apply mock rules defined in the plugin
-- **Zero config** - Package/bundle id and plugin host are auto-detected per platform (Android emulator: `10.0.2.2`; iOS Simulator: `127.0.0.1`)
+- **Zero config** - Package/bundle id auto-detected; the plugin host is discovered by PING on Android (device loopback via `adb reverse`, falling back to `10.0.2.2` on emulators) and is `127.0.0.1` on the iOS Simulator
 
 ## How it works
 

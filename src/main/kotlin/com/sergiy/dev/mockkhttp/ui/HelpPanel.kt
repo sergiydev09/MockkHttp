@@ -36,7 +36,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
     companion object {
         // Versions shown in the setup snippets — keep in sync on releases (see VERSION_FILES.md)
         private const val GRADLE_PLUGIN_VERSION = "1.6.1"
-        private const val FLUTTER_PACKAGE_VERSION = "1.6.1"
+        private const val FLUTTER_PACKAGE_VERSION = "1.7.0"
 
         private const val CARD_ANDROID = "android"
         private const val CARD_FLUTTER = "flutter"
@@ -178,7 +178,8 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
         <h2>2 · Run your app</h2>
         <p>Build and launch a <strong>debug</strong> build on an emulator or physical device
-        (port forwarding for physical devices is set up automatically).</p>
+        (port forwarding for physical devices is set up automatically, on device selection
+        and before every scan).</p>
 
         <h2>3 · Start intercepting</h2>
         <p>In the <strong>Inspector</strong> tab: pick your device and app, choose a mode
@@ -217,8 +218,9 @@ void main() {
             <li><strong>Android emulator</strong> and <strong>iOS Simulator</strong>: zero config — just run the app</li>
             <li><strong>Physical iPhone</strong>: <code>MockkHttp.init(host: '&lt;your Mac's LAN IP&gt;')</code>
                 + <code>NSLocalNetworkUsageDescription</code> in <code>Info.plist</code> (same Wi-Fi)</li>
-            <li><strong>Physical Android</strong>: <code>adb reverse tcp:9876 tcp:9876</code>
-                + <code>MockkHttp.init(host: '127.0.0.1')</code></li>
+            <li><strong>Physical Android</strong>: zero config with
+                <code>mockk_http &gt;= 1.7.0</code> &mdash; the plugin opens the port forward for
+                you. On older versions, pass <code>MockkHttp.init(host: '127.0.0.1')</code></li>
         </ul>
         <p>Then in the <strong>Inspector</strong> tab: pick your device and app, choose a mode
         (Recording / Debug / Mockk) and press <strong>Start</strong>.</p>

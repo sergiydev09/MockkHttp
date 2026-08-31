@@ -31,6 +31,9 @@ class AppManager(project: Project) {
     @OptIn(ExperimentalCoroutinesApi::class)
     private val usbScanDispatcher = Dispatchers.IO.limitedParallelism(3)
 
+    /** Per-serial `unzip` availability. Immutable for a given device, so cache it forever. */
+    private val unzipAvailability = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
     companion object {
         fun getInstance(project: Project): AppManager {
             return project.getService(AppManager::class.java)
@@ -45,8 +48,12 @@ class AppManager(project: Project) {
         private const val APK_GREP_MAX_TIMEOUT_S = 120L
         private const val APK_GREP_IDLE_TIMEOUT_S = 90L
 
-        // Never drag hundreds of MB over USB just to look inside an APK.
-        private const val MAX_APK_PULL_BYTES = 150L * 1024 * 1024
+        // Ceiling on a single APK transfer. Measured on a Pixel 7a over USB 2.0: a 165 MB APK
+        // pulls in ~5 s at 32 MB/s, so the earlier 150 MB cap was guarding against a cost that
+        // does not exist - and it silently skipped the deep Flutter check for exactly the kind
+        // of app this feature targets (a debug build with a 116 MB kernel_blob.bin). What
+        // actually bounds the damage is MAX_APK_PULLS_PER_SCAN plus a cancellable transfer.
+        private const val MAX_APK_PULL_BYTES = 1024L * 1024 * 1024
 
         // Hard ceiling on how many APKs a single scan may pull, whatever the heuristics say.
         // The probe below can legitimately answer UNKNOWN (old toybox, unreadable API level),
@@ -62,6 +69,14 @@ class AppManager(project: Project) {
         // `flutter_assets` would green-light the base.apk of every split-installed Flutter app,
         // whose libapp.so lives in split_config.<abi>.apk instead.
         private const val FLUTTER_PROBE_CMD_ARGS = "-e kernel_blob.bin -e libapp.so"
+
+        // Must match MockkHttpCore.markerFileName in the mockk_http Dart package.
+        private const val SANDBOX_MARKER_NAME = "mockk_http.marker"
+
+        // Entries `unzip -p` inflates for Method 3. Quoted so the DEVICE shell does not glob
+        // them against the host filesystem, and unzip itself expands the wildcards.
+        private const val UNZIP_ENTRY_PATTERNS =
+            "'assets/flutter_assets/kernel_blob.bin' 'lib/*/libapp.so' 'classes*.dex'"
 
         private const val API_LEVEL_TIMEOUT_SECONDS = 5L
 
@@ -141,22 +156,36 @@ class AppManager(project: Project) {
 
             if (packageNames.isEmpty()) return emptyList()
 
-            if (showAllApps) {
-                // Return ALL third-party apps without MockkHttp detection
-                logger.info("📋 Returning all ${packageNames.size} third-party apps")
-                val apps = packageNames.map { pkg ->
-                    createAppInfo(device, pkg, hasMockkHttp = false)
-                }
-                return apps
-            }
+            // NOTE: showAllApps deliberately does NOT skip detection. Returning an unmarked
+            // list would leave the user guessing which of 80 packages is theirs; instead we
+            // detect as usual and widen the RESULT, keeping the hits flagged and sorted first
+            // - the same contract SimulatorManager has always had on iOS.
 
             // Step 2: Check all apps in parallel (throttled on USB, see dispatchers above)
             val dispatcher = if (device.isEmulator) emulatorScanDispatcher else usbScanDispatcher
+
+            // A debug build is the only kind that can plausibly embed MockkHttp, and `run-as`
+            // answers "is this package debuggable?" in ~50 ms without transferring anything.
+            // On a real phone this is what separates the two or three apps under development
+            // from the Play Store apps that would otherwise burn the whole pull budget.
+            val debuggable = findDebuggablePackages(device, packageNames, dispatcher, isCancelled)
+            if (debuggable.isNotEmpty()) {
+                logger.info("🐛 ${debuggable.size} debuggable package(s): ${debuggable.joinToString()}")
+            } else {
+                logger.warn(
+                    "⚠️ No debuggable packages found. A release build cannot be detected unless it " +
+                    "announces itself - launch the app while the plugin is running."
+                )
+            }
+
             logger.info("🔍 Checking for MockkHttp in ${packageNames.size} packages...")
             val scanned = AtomicInteger(0)
             // Check the likely candidates first so they claim the pull budget before the
-            // arbitrary order of `pm list packages` gets to spend it.
-            val ordered = packageNames.sortedByDescending { it in priorityPackages }
+            // arbitrary order of `pm list packages` gets to spend it. Rank: the app the user
+            // last worked with, then anything debuggable, then the rest.
+            val ordered = packageNames.sortedByDescending { pkg ->
+                (if (pkg in priorityPackages) 2 else 0) + (if (pkg in debuggable) 1 else 0)
+            }
             val mockkHttpPackages = runBlocking {
                 ordered.map { pkg ->
                     async(dispatcher) {
@@ -166,7 +195,10 @@ class AppManager(project: Project) {
                         val hit = try {
                             hasMockkHttpInstalled(
                                 device, pkg, isCancelled, apiLevel, tally,
-                                isPriority = pkg in priorityPackages
+                                // Debuggable packages share the reserved pull slots: they are
+                                // the only realistic candidates, so they must never lose the
+                                // budget race to a Play Store app that merely sorts first.
+                                isPriority = pkg in priorityPackages || pkg in debuggable
                             )
                         } catch (e: ProcessCanceledException) {
                             false
@@ -181,12 +213,22 @@ class AppManager(project: Project) {
 
             logger.info("🔍 Found ${mockkHttpPackages.size} app(s) with MockkHttp")
 
-            // Step 3: Get details only for matching apps (dumpsys per match)
-            val apps = mockkHttpPackages.map { pkg ->
-                createAppInfo(device, pkg, hasMockkHttp = true)
+            // Step 3: Get details for the matches (dumpsys per match). With showAllApps the
+            // non-matching packages are appended, flagged false and sorted last, so the user
+            // can still pick an app the detection missed.
+            val hits = mockkHttpPackages.toSet()
+            val apps = if (showAllApps) {
+                logger.info("📋 Listing all ${packageNames.size} third-party apps (${hits.size} detected)")
+                packageNames
+                    .sortedWith(compareByDescending<String> { it in hits }.thenBy { it })
+                    .map { pkg -> createAppInfo(device, pkg, hasMockkHttp = pkg in hits) }
+            } else {
+                mockkHttpPackages.map { pkg ->
+                    createAppInfo(device, pkg, hasMockkHttp = true)
+                }
             }
 
-            apps.forEach { app ->
+            apps.filter { it.hasMockkHttp }.forEach { app ->
                 logger.info("  ✅ ${app.packageName} (v${app.versionName ?: "?"})")
             }
 
@@ -352,6 +394,24 @@ class AppManager(project: Project) {
                 return true
             }
 
+            // Method 2b: in-sandbox marker, read through run-as.
+            // /data/local/tmp is drwxrwx--x shell:shell on a production device, so an app can
+            // only write the marker above on an emulator. Since 1.7.0 the Flutter package also
+            // drops one inside its own sandbox, which run-as can read for any debuggable build
+            // - ~90 ms, no transfer, and it works while the app is not even running.
+            val sandboxReceiver = EmulatorManager.CollectingOutputReceiver(isCancelled)
+            device.executeShellCommand(
+                "run-as $packageName sh -c 'cat cache/$SANDBOX_MARKER_NAME 2>/dev/null || " +
+                    "cat files/$SANDBOX_MARKER_NAME 2>/dev/null'",
+                sandboxReceiver,
+                10, 5,
+                TimeUnit.SECONDS
+            )
+            if (sandboxReceiver.output.contains("flutter:")) {
+                logger.info("✅ $packageName HAS MockkHttp (Flutter, sandbox marker via run-as)")
+                return true
+            }
+
             // Get APK paths
             val pathReceiver = EmulatorManager.CollectingOutputReceiver(isCancelled)
             device.executeShellCommand("pm path $packageName", pathReceiver, 5, TimeUnit.SECONDS)
@@ -369,24 +429,27 @@ class AppManager(project: Project) {
             for (apkPath in apkPaths) {
                 if (isCancelled()) return false
 
-                // Method 3: Grep APK binary for Android native class (uncompressed in dex).
-                // Uses the 5-arg overload: (maxTimeout, maxTimeToOutputResponse, unit). The
-                // 4-arg one only sets the *silence* budget, which for a `grep -c` that prints
-                // nothing until it ends means the whole APK scan had to fit in 10s - and any
-                // overrun silently marked the user's own app as "no MockkHttp".
-                val grepReceiver = EmulatorManager.CollectingOutputReceiver(isCancelled)
-                device.executeShellCommand(
-                    "grep -c MockkHttpInterceptor $apkPath",
-                    grepReceiver,
-                    APK_GREP_MAX_TIMEOUT_S,
-                    APK_GREP_IDLE_TIMEOUT_S,
-                    TimeUnit.SECONDS
-                )
-
-                val matchCount = grepReceiver.output.trim().toIntOrNull() ?: 0
-                if (matchCount > 0) {
-                    logger.info("✅ $packageName HAS MockkHttp (Android native, grep: $matchCount matches)")
-                    return true
+                // Method 3: decompress the interesting entries ON THE DEVICE and grep those.
+                //
+                // The previous `grep -c MockkHttpInterceptor <apk>` could never match: every
+                // AGP-built APK stores classes.dex as Defl:N, and a Flutter debug build stores
+                // kernel_blob.bin the same way, so neither marker exists as plain bytes
+                // anywhere in the file. That is why NATIVE apps were missed too, not just
+                // Flutter ones - the whole method was reading compressed data as if it were
+                // text and concluding "no MockkHttp".
+                //
+                // `unzip -p` inflates the entries in place: measured on a Pixel 7a, 23 hits in
+                // ~2 s on a 165 MB APK whose kernel_blob.bin alone is 116 MB - and zero bytes
+                // over USB, versus a multi-hundred-MB pull.
+                when (inspectApkOnDevice(device, apkPath, isCancelled)) {
+                    true -> {
+                        logger.info("✅ $packageName HAS MockkHttp (inspected on device: $apkPath)")
+                        return true
+                    }
+                    // Inspected and conclusively absent - no reason to pull it.
+                    false -> continue
+                    // No usable `unzip` on this device: fall through to the pull path below.
+                    null -> {}
                 }
 
                 // Method 3.5: cheap on-device probe before paying for a full APK pull.
@@ -454,6 +517,111 @@ class AppManager(project: Project) {
             return false
         }
     }
+
+    /**
+     * Packages whose APK is marked debuggable, decided by `run-as <pkg> true`: it succeeds only
+     * for a debuggable app and otherwise prints "run-as: package not debuggable: <pkg>".
+     *
+     * This is a *ranking* signal, never an exclusion one - a release build could still embed
+     * MockkHttp, so non-debuggable packages are still checked, just last. Failing open (empty
+     * set) simply restores the previous ordering.
+     */
+    private fun findDebuggablePackages(
+        device: IDevice,
+        packageNames: List<String>,
+        dispatcher: CoroutineDispatcher,
+        isCancelled: () -> Boolean
+    ): Set<String> {
+        return try {
+            runBlocking {
+                packageNames.map { pkg ->
+                    async(dispatcher) {
+                        if (isCancelled()) return@async null
+                        try {
+                            val receiver = EmulatorManager.CollectingOutputReceiver(isCancelled)
+                            device.executeShellCommand(
+                                "run-as $pkg true 2>/dev/null && echo DEBUGGABLE",
+                                receiver, 10, 5, TimeUnit.SECONDS
+                            )
+                            if (receiver.output.contains("DEBUGGABLE")) pkg else null
+                        } catch (e: ProcessCanceledException) {
+                            null
+                        } catch (e: Exception) {
+                            // Old devices without run-as, or a package that vanished mid-scan.
+                            logger.debug("run-as probe failed for $pkg: ${e.message}")
+                            null
+                        }
+                    }
+                }.awaitAll().filterNotNull().toSet()
+            }
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
+            logger.debug("Debuggable-package probe failed: ${e.message}")
+            emptySet()
+        }
+    }
+
+    /**
+     * Inflate the entries that can carry a MockkHttp marker and grep them, all on the device.
+     *
+     * Covers every integration in one command:
+     * - `assets/flutter_assets/kernel_blob.bin` — Flutter debug
+     * - `lib/&#42;/libapp.so` — Flutter release/profile (AOT)
+     * - `classes&#42;.dex` — native Android (the injected OkHttp interceptor)
+     *
+     * @return true/false when the APK was actually inspected, or null when the device has no
+     *   usable `unzip` (pre-Android-10), so the caller can fall back to pulling the APK.
+     *   Never returns false on an error: an unreadable APK is not proof of absence.
+     */
+    private fun inspectApkOnDevice(
+        device: IDevice,
+        apkPath: String,
+        isCancelled: () -> Boolean
+    ): Boolean? {
+        if (!deviceHasUnzip(device, isCancelled)) return null
+
+        val receiver = EmulatorManager.CollectingOutputReceiver(isCancelled)
+        device.executeShellCommand(
+            "unzip -p '$apkPath' $UNZIP_ENTRY_PATTERNS 2>/dev/null | " +
+                "grep -c -e mockk_http -e MockkHttpInterceptor",
+            receiver,
+            APK_GREP_MAX_TIMEOUT_S,
+            APK_GREP_IDLE_TIMEOUT_S,
+            TimeUnit.SECONDS
+        )
+
+        // A cancelled command returns normally with partial output; there is no verdict to read.
+        if (isCancelled()) return false
+
+        // adb folds stderr into stdout, and it can arrive after the count: keep the last line
+        // that is nothing but digits. `grep -c` with no match prints 0 and exits 1 - that is a
+        // real answer, not a failure.
+        val count = receiver.output.lines()
+            .map { it.trim() }
+            .lastOrNull { it.isNotEmpty() && it.all { c -> c.isDigit() } }
+            ?.toIntOrNull()
+            ?: return null   // Unparseable: treat as "could not inspect", never as absent.
+
+        return count > 0
+    }
+
+    /** Cached per device: `unzip` ships with Android 10+, and the answer cannot change. */
+    private fun deviceHasUnzip(device: IDevice, isCancelled: () -> Boolean): Boolean =
+        unzipAvailability.getOrPut(device.serialNumber) {
+            try {
+                val receiver = EmulatorManager.CollectingOutputReceiver(isCancelled)
+                device.executeShellCommand("which unzip", receiver, 10, 5, TimeUnit.SECONDS)
+                receiver.output.contains("unzip").also {
+                    if (!it) logger.warn("⚠️ ${device.serialNumber} has no `unzip`; falling back to APK downloads")
+                }
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                logger.debug("Could not probe for unzip: ${e.message}")
+                false
+            }
+        }
 
     private enum class FlutterProbe { YES, NO, UNKNOWN }
 

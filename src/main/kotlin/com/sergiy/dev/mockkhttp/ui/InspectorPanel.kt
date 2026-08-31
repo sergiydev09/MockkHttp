@@ -40,6 +40,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val refreshDevicesButton: JButton
     private val appComboBox: ComboBox<AppInfo>
     private val refreshAppsButton: JButton
+    private val showAllAppsCheckbox: JCheckBox
     private val recordingRadio: JRadioButton
     private val mockkRadio: JRadioButton
     private val modeButtonGroup: ButtonGroup
@@ -195,7 +196,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 ): java.awt.Component {
                     super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
                     if (value is AppInfo) {
-                        text = value.packageName
+                        // With "Show all apps" the list mixes detected and undetected packages;
+                        // without a marker they are indistinguishable rows.
+                        text = if (value.hasMockkHttp) "🎭 ${value.packageName}" else value.packageName
+                        if (!value.hasMockkHttp && !isSelected) foreground = JBColor.GRAY
                     }
                     return this
                 }
@@ -206,6 +210,15 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         refreshAppsButton = JButton(AllIcons.Actions.Refresh).apply {
             toolTipText = "Refresh Apps"
             isEnabled = false
+            addActionListener { forceRefreshApps() }
+        }
+
+        // Escape hatch. Android only ever listed apps that PASSED detection, so any miss was
+        // unrecoverable from the UI - while iOS has always listed every user app and used
+        // detection merely as a sort key. This restores the symmetry.
+        showAllAppsCheckbox = JCheckBox("Show all apps").apply {
+            toolTipText = "List every third-party app, not just the ones MockkHttp was detected in"
+            isSelected = false
             addActionListener { forceRefreshApps() }
         }
 
@@ -431,6 +444,8 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 })
                 add(Box.createHorizontalStrut(5))
                 add(refreshAppsButton)
+                add(Box.createHorizontalStrut(5))
+                add(showAllAppsCheckbox)
 
                 add(Box.createHorizontalGlue())
             }
@@ -817,6 +832,9 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
         scannedAppsSerial = emulator.serialNumber
 
+        // Read on the EDT: the background task must not touch Swing state.
+        val showAll = showAllAppsCheckbox.isSelected
+
         // Run ADB operation in background to avoid blocking EDT
         object : Task.Backgroundable(project, "Scanning apps on ${emulator.displayName}...", true) {
             private var mockkHttpApps: List<AppInfo> = emptyList()
@@ -825,12 +843,37 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 indicator.isIndeterminate = true
                 indicator.text = "Scanning for apps with MockkHttp..."
 
+                // A physical Android device reaches the plugin only through `adb reverse`, and
+                // until 1.7.0 that was established in start() - i.e. AFTER an app had been
+                // selected. But selecting an app requires detecting it first, and the cheapest
+                // detection is the app's own PING. Establish the tunnel before the scan so an
+                // already-running app can announce itself while we look.
+                //
+                // Emulators get it too, even though 10.0.2.2 already works there: with the
+                // tunnel open everywhere, 127.0.0.1 is correct on every Android target, which
+                // is what lets the Dart client discover the host instead of guessing whether
+                // it is running on an emulator - a distinction it cannot make reliably.
+                if (emulator.platform == DevicePlatform.ANDROID) {
+                    indicator.text = "Opening ADB reverse tunnel..."
+                    // Order matters: the tunnel is useless while nothing listens on the far
+                    // end, and an app that gets a refused connection backs off for 15 s.
+                    com.sergiy.dev.mockkhttp.proxy.GlobalOkHttpInterceptorServer
+                        .getInstance().ensureStarted()
+                    emulatorManager.setupAdbReverse(
+                        emulator.serialNumber,
+                        OkHttpInterceptorServer.SERVER_PORT,
+                        OkHttpInterceptorServer.SERVER_PORT
+                    )
+                    indicator.text = "Scanning for apps with MockkHttp..."
+                }
+
                 mockkHttpApps = when (emulator.platform) {
                     // Android: getInstalledApps already returns only apps with MockkHttp
                     DevicePlatform.ANDROID ->
                         appManager.getInstalledApps(
                             emulator.serialNumber,
                             includeSystem = false,
+                            showAllApps = showAll,
                             // Plain boolean probe: the indicator is a ThreadLocal of *this*
                             // thread, so ProgressManager.checkCanceled() would be a silent
                             // no-op inside the scan's Dispatchers.IO coroutines.
@@ -914,10 +957,32 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     updateStatus("$previousPackage not found in this scan - press Refresh Apps", JBColor.ORANGE)
                 }
 
+                // Detected but never heard from: on a phone that almost always means the app
+                // is on mockk_http <= 1.6.1, which dials 10.0.2.2 — an emulator-only alias
+                // that cannot reach this Mac from real hardware. It will show up in the
+                // selector and then capture nothing, which reads as a bug unless we say so.
+                if (mockkHttpApps.isNotEmpty() &&
+                    emulator.platform == DevicePlatform.ANDROID &&
+                    !emulator.isEmulator
+                ) {
+                    val announced = com.sergiy.dev.mockkhttp.proxy.GlobalOkHttpInterceptorServer
+                        .getInstance().getKnownMockkHttpPackages()
+                    val silent = mockkHttpApps.filterNot { it.packageName in announced }
+                    if (silent.isNotEmpty()) {
+                        logger.warn(
+                            "⚠️ ${silent.joinToString { it.packageName }} has not announced itself yet. " +
+                            "If it is running and traffic never appears, it is on an old mockk_http: " +
+                            "Flutter needs mockk_http >= 1.7.0 on a physical device (older versions " +
+                            "dial 10.0.2.2, which only exists on an emulator). Quick check without " +
+                            "changing pubspec.yaml: MockkHttp.init(host: '127.0.0.1')."
+                        )
+                    }
+                }
+
                 if (mockkHttpApps.isEmpty()) {
                     when (emulator.platform) {
                         DevicePlatform.ANDROID ->
-                            logger.warn("⚠️ No apps with MockkHttp found. Make sure you've added the Gradle plugin to your app.")
+                            logger.warn("⚠️ No apps with MockkHttp found. Tick 'Show all apps' to pick one manually, or make sure the Gradle plugin (native) / mockk_http (Flutter) is in your app.")
                         DevicePlatform.IOS_SIMULATOR ->
                             logger.warn("⚠️ No user apps found on this simulator. Install your Flutter app first.")
                         DevicePlatform.IOS_DEVICE ->
@@ -1081,15 +1146,22 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                         logger.warn("⚠️  No app selected, will receive ALL flows from all apps")
                     }
 
-                    // Set up ADB reverse for physical ANDROID devices only.
+                    // Set up ADB reverse for ANY Android target, so 127.0.0.1 is a valid route
+                    // to the plugin on emulators and phones alike. The scan already opened it;
+                    // this re-establishes it if the device was replugged in between.
                     // iOS Simulators share the Mac's loopback (127.0.0.1 reaches the plugin
                     // directly), and physical iOS devices connect via the Mac's LAN IP —
                     // neither needs (nor supports) port forwarding.
                     val device = selectedEmulator
-                    if (device != null && device.platform == DevicePlatform.ANDROID && !device.isEmulator) {
-                        logger.info("📲 Physical Android device detected, setting up ADB reverse port forwarding...")
+                    if (device != null && device.platform == DevicePlatform.ANDROID) {
+                        logger.info("📲 Android device: setting up ADB reverse port forwarding...")
                         if (!emulatorManager.setupAdbReverse(device.serialNumber, OkHttpInterceptorServer.SERVER_PORT, OkHttpInterceptorServer.SERVER_PORT)) {
-                            throw Exception("Failed to set up ADB reverse port forwarding. Make sure the device is connected via USB with USB debugging enabled.")
+                            // Fatal on a phone - it has no other route to this Mac. An emulator
+                            // still reaches us on 10.0.2.2, so a failure there is not fatal.
+                            if (!device.isEmulator) {
+                                throw Exception("Failed to set up ADB reverse port forwarding. Make sure the device is connected via USB with USB debugging enabled.")
+                            }
+                            logger.warn("⚠️ ADB reverse failed on the emulator; falling back to the 10.0.2.2 route")
                         }
                     } else if (device != null && device.platform == DevicePlatform.IOS_DEVICE) {
                         logger.info("🍏 Physical iOS device: make sure the app was started with MockkHttp.init(host: '<this Mac's LAN IP>')")
@@ -1174,12 +1246,14 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     okHttpInterceptorServer.stop()
                     logger.info("🔌 Stopped OkHttp Interceptor Server")
 
-                    // Clean up ADB reverse for physical ANDROID devices only. The device is
-                    // captured on the EDT by the caller: re-reading selectedEmulator here would
-                    // race with a device switch and tear down the *new* device's reverse.
-                    if (device != null && device.platform == DevicePlatform.ANDROID && !device.isEmulator) {
-                        emulatorManager.removeAdbReverse(device.serialNumber, OkHttpInterceptorServer.SERVER_PORT)
-                    }
+                    // The ADB reverse tunnel is deliberately LEFT OPEN on Stop.
+                    //
+                    // Tearing it down used to break the next scan: the app is still running,
+                    // loses its route, and its client backs off for 15 s - so pressing Stop
+                    // made the app disappear from the selector. The mapping costs nothing, dies
+                    // with the device anyway, and degrades safely: with no server behind it adbd
+                    // accepts and closes, and both clients require a literal PONG before
+                    // considering the plugin connected.
 
                     SwingUtilities.invokeLater {
                         currentMode = Mode.STOPPED

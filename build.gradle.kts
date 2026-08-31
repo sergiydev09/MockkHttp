@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.6.2"
+version = "1.7.0"
 
 repositories {
     mavenCentral()
@@ -64,6 +64,19 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>Version 1.7.0 - Flutter on Physical Android Devices</h3>
+            <ul>
+                <li><strong>📲 Flutter apps are finally detected on real Android phones.</strong> Every one of the four detection methods was failing at once on physical hardware, so the app never appeared in the selector. All four are fixed.</li>
+                <li><strong>🔍 APKs are now inspected ON the device:</strong> <code>unzip -p</code> + grep inflates only the entries that matter, so a 165&nbsp;MB app is checked in ~2 seconds with zero bytes over USB — instead of downloading the whole APK (and 1.6.2 skipped anything over 150&nbsp;MB entirely, which silently excluded most real Flutter debug builds).</li>
+                <li><strong>🐛 Fixes native Android detection too:</strong> the old check grepped the raw APK for the interceptor class, but <code>classes.dex</code> is always DEFLATE-compressed, so that marker was never present as plain bytes. It now looks inside the decompressed dex.</li>
+                <li><strong>🔌 The ADB reverse tunnel is opened before the scan</strong> (and on emulators too), so a running app can announce itself while the plugin looks for it. Previously it was only established after picking an app — which required detecting it first.</li>
+                <li><strong>🎯 Smarter scan order:</strong> debuggable packages are identified with <code>run-as</code> (~50&nbsp;ms each) and checked first, so your app under development is never crowded out by Play Store apps.</li>
+                <li><strong>☑️ New "Show all apps" checkbox:</strong> lists every third-party app with the detected ones flagged 🎭 and sorted first, so a detection miss is always recoverable — the same behaviour iOS already had.</li>
+                <li><strong>⚠️ Honest warning about stale packages:</strong> if an app is detected but has never announced itself, the log explains that Flutter needs mockk_http &gt;= 1.7.0 on a physical device and how to test it in one line.</li>
+                <li><strong>🔁 Stop no longer breaks the next scan:</strong> the reverse tunnel is left in place, so a running app keeps its route to the plugin.</li>
+            </ul>
+            <p><strong>Flutter users on a physical Android device must upgrade to <code>mockk_http: ^1.7.0</code></strong> — older versions dial <code>10.0.2.2</code>, an alias that only exists on an emulator, so they can be detected but never send traffic. 1.7.0 discovers the host instead of guessing it. Gradle plugin and Android library are unchanged at 1.6.1.</p>
+
             <h3>Version 1.6.2 - Physical Android Devices Fixed (Hotfix)</h3>
             <ul>
                 <li><strong>📲 Physical Android devices work again:</strong> Scanning a USB-connected phone for MockkHttp apps used to saturate ADB — up to 10 concurrent shell connections plus a full APK download per package — which made the device drop offline, the scan return nothing and your app never show up in the app selector. Flutter apps on real hardware were effectively untestable.</li>

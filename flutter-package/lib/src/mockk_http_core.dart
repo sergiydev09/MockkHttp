@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'ios_bundle_info.dart';
@@ -132,7 +133,7 @@ class MockkHttpCore {
 class MockkHttp {
   MockkHttp._();
 
-  static const String version = '1.6.1';
+  static const String version = '1.7.0';
 
   /// Initialize MockkHttp with global [HttpOverrides].
   ///
@@ -153,6 +154,7 @@ class MockkHttp {
     int port = 9876,
     String? packageName,
     String? host,
+    bool announce = true,
   }) {
     final resolvedPackage = packageName ?? autoDetectPackageName();
 
@@ -179,6 +181,41 @@ class MockkHttp {
 
     // Write marker file so the IntelliJ plugin can detect this app
     _writeMarkerFile(resolvedPackage);
+
+    // Announce ourselves right away, then keep trying until the plugin answers.
+    //
+    // Until 1.7.0 the PING fired only from the request path, so an app that was running
+    // but idle was invisible to the plugin's scan — and an app started BEFORE the plugin
+    // stayed invisible until it happened to make a request. The retry also re-registers
+    // the package after an IDE restart, which is the only thing that clears the plugin's
+    // list of announced apps.
+    if (announce) _startAnnouncing(client);
+  }
+
+  /// Cancels any announce loop from a previous [init] — mostly a convenience for tests.
+  static void stopAnnouncing() {
+    _announceTimer?.cancel();
+    _announceTimer = null;
+  }
+
+  static Timer? _announceTimer;
+
+  static void _startAnnouncing(MockkHttpPluginClient client) {
+    stopAnnouncing();
+
+    // Fire-and-forget: init() is called from main() and must never throw or block.
+    unawaited(client.isPluginConnected());
+
+    _announceTimer =
+        Timer.periodic(const Duration(seconds: 20), (timer) async {
+      if (client.hostConfirmed) {
+        // The plugin knows about us; the request path keeps the registration alive.
+        timer.cancel();
+        _announceTimer = null;
+        return;
+      }
+      await client.isPluginConnected();
+    });
   }
 
   static String _platformLabel() {
@@ -226,12 +263,29 @@ class MockkHttp {
     return null;
   }
 
+  /// Name of the in-sandbox marker, read by the plugin via `run-as`.
+  static const String markerFileName = 'mockk_http.marker';
+
   /// Write a marker file so the IntelliJ plugin can detect this app.
-  /// - Android: `/data/local/tmp/mockk_http_{pkg}` (readable via `adb shell ls`).
+  ///
+  /// - Android: TWO locations, because neither works everywhere.
+  ///   * `{app temp dir}/mockk_http.marker` — inside the app's own sandbox
+  ///     (Dart's [Directory.systemTemp] is the app cache dir on Android). The
+  ///     plugin reads it with `adb shell run-as {pkg} cat cache/...`, which
+  ///     works on production devices for any debuggable build. This is the
+  ///     only one that works on a physical phone.
+  ///   * `/data/local/tmp/mockk_http_{pkg}` — kept for emulators. On a real
+  ///     device that directory is `drwxrwx--x shell shell`, so an ordinary app
+  ///     cannot write there at all; the attempt fails silently by design.
   /// - iOS Simulator: `{data container}/Documents/.mockk_http` — the plugin
   ///   finds it via `xcrun simctl get_app_container {udid} {bundleid} data`.
   static void _writeMarkerFile(String? packageName) {
     if (packageName == null) return;
+
+    if (Platform.isAndroid) {
+      // In-sandbox marker: the only one that works on real hardware.
+      _writeAndroidSandboxMarker(packageName, 'flutter:$version:$packageName');
+    }
 
     try {
       if (Platform.isAndroid) {
@@ -245,6 +299,37 @@ class MockkHttp {
       }
     } catch (_) {
       // Non-critical — detection falls back to PING announcements
+    }
+  }
+
+  /// Write [payload] inside the app's own data directory, where `run-as` can read it.
+  ///
+  /// The path is derived from `/proc/self/status` rather than taken from
+  /// [Directory.systemTemp]: Android sets no `TMPDIR` for app processes (verified on a
+  /// Pixel 7a — `TMPDIR` is empty), so `systemTemp` resolves to `/tmp`, which does not
+  /// exist on Android. The app's uid encodes the Android user: uid 10312 → user 0 →
+  /// `/data/user/0/<pkg>/`.
+  static void _writeAndroidSandboxMarker(String packageName, String payload) {
+    try {
+      final status = File('/proc/self/status').readAsStringSync();
+      final uid = int.parse(RegExp(r'Uid:\s+(\d+)').firstMatch(status)!.group(1)!);
+      final userId = uid ~/ 100000; // 0 normally, 10+ on a work profile
+
+      for (final base in [
+        '/data/user/$userId/$packageName',
+        '/data/data/$packageName',
+      ]) {
+        for (final dir in ['cache', 'files']) {
+          try {
+            File('$base/$dir/$markerFileName').writeAsStringSync(payload);
+            return;
+          } catch (_) {
+            // Try the next location.
+          }
+        }
+      }
+    } catch (_) {
+      // Non-critical — detection falls back to PING / on-device APK inspection.
     }
   }
 

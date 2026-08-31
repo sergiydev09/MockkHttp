@@ -1,3 +1,21 @@
+## 1.7.0
+
+- **Fix: physical Android devices now work.** The plugin host was hardcoded to `10.0.2.2` on
+  Android — a QEMU-only alias that routes nowhere on a real phone — so an app on physical
+  hardware could never reach the plugin, whether or not `adb reverse` was set up. The host is
+  now **discovered, not guessed**: the client tries `127.0.0.1` (the phone's loopback, tunnelled
+  by the plugin's `adb reverse`) and then `10.0.2.2` (emulator), keeping whichever answers PONG.
+  Passing `host:` explicitly still overrides everything, and iOS behaviour is unchanged.
+- **Fix: the marker file the plugin looks for is now written where it can actually be read.**
+  It used to go to `/data/local/tmp/`, which is `drwxrwx--x shell:shell` on a production device
+  — an app simply cannot write there. It is now also written inside the app's own sandbox
+  (path derived from `/proc/self/status`), where the plugin reads it with `adb shell run-as`.
+- **Feature: the app announces itself at `init()`** and keeps retrying every 20 s until the
+  plugin answers. Previously the PING only fired when the app made an HTTP request, so a
+  running-but-idle app was invisible to the plugin's scan — and an app started before the
+  plugin stayed invisible. Opt out with `MockkHttp.init(announce: false)`.
+- Requires the MockkHttp IntelliJ plugin 1.7.0 or newer for automatic physical-device setup.
+
 ## 1.6.1
 
 - Docs: README now documents the real platform support — Android emulators and iOS Simulators with zero config, plus a new "Physical devices" section (iPhone via `MockkHttp.init(host: ...)` + `NSLocalNetworkUsageDescription`; Android via `adb reverse` + `host: '127.0.0.1'`).

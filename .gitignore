@@ -47,3 +47,6 @@ bin/
 ### Claude Code ###
 CLAUDE.md
 .claude/
+### Dart / Flutter ###
+.dart_tool/
+.packages
