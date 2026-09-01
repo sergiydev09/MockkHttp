@@ -16,7 +16,7 @@ Flutter package for the [MockkHttp IntelliJ/Android Studio plugin](https://githu
 
 ```yaml
 dependencies:
-  mockk_http: ^1.7.0
+  mockk_http: ^1.7.1
 ```
 
 ## Usage

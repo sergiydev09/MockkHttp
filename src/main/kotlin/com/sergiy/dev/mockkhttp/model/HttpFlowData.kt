@@ -56,7 +56,13 @@ data class HttpResponseData(
 }
 
 /**
- * Modified response data to send back to mitmproxy.
+ * INTERNAL representation of an edited response, passed between the dialogs, the
+ * stores and the interceptor service.
+ *
+ * Careful: [com.sergiy.dev.mockkhttp.proxy.ModifiedResponseData] is a DIFFERENT
+ * class with the same name — the wire format — and it calls this field `body`.
+ * Serialising this one to the socket would send `content` and the app would
+ * silently drop the edited body.
  */
 data class ModifiedResponseData(
     val statusCode: Int? = null,

@@ -8,6 +8,7 @@ import com.intellij.openapi.project.Project
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.store.SettingsStore
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
 /**
@@ -15,33 +16,108 @@ import java.util.concurrent.TimeUnit
  * Handles ADB bridge initialization and emulator discovery.
  */
 @Service(Service.Level.PROJECT)
-class EmulatorManager(private val project: Project) {
+class EmulatorManager(private val project: Project) : com.intellij.openapi.Disposable {
 
     private val logger = MockkHttpLogger.getInstance(project)
+
+    @Volatile
     private var adbBridge: AndroidDebugBridge? = null
+
+    // Read without the init lock by getConnectedDevices()/getDevice(), written under it.
+    @Volatile
     private var isInitialized = false
-    private val deviceChangeListeners = mutableListOf<() -> Unit>()
+
+    // Bumped once per completed initialize() attempt, under the lock. A caller that blocked on
+    // that lock compares it against the snapshot it took *before* contending: if it moved, the
+    // attempt it waited for is its answer, so it never spins up a second AndroidDebugBridge.
+    @Volatile
+    private var initAttempts = 0L
+
+    @Volatile
+    private var lastInitResult = false
+
+    /**
+     * Memoized ADB path plus the configured value it was resolved from.
+     *
+     * Resolving walks env vars, Android Studio preferences, Homebrew and PATH, and can shell out
+     * to a login shell - dozens of filesystem hits for a value that only changes when the user
+     * edits Settings. See [invalidateAdbPathCache].
+     *
+     * Path and source live in ONE object on purpose: as two independent @Volatile fields a
+     * concurrent reader could see the new path paired with the old source, decide the cache was
+     * stale and re-run the whole search. [failedAtMs] does the same job for a miss.
+     */
+    private data class AdbPathCache(
+        val path: String?,
+        val source: String?,
+        val failedAtMs: Long = 0L
+    )
+
+    @Volatile
+    private var adbPathCache: AdbPathCache? = null
+
+    // Listeners are added from the UI while ddmlib fires callbacks from its own transport
+    // thread; a plain ArrayList would eventually throw ConcurrentModificationException here.
+    private val deviceChangeListeners = CopyOnWriteArrayList<() -> Unit>()
+
     private var deviceListener: AndroidDebugBridge.IDeviceChangeListener? = null
 
     companion object {
+        /**
+         * How long a FAILED adb resolution is remembered before searching again.
+         *
+         * Short enough that plugging in an SDK is noticed without restarting the IDE, long
+         * enough that a device scan does not re-run a ~25s search for every command.
+         */
+        private const val FAILED_RESOLUTION_TTL_MS = 30_000L
+
         fun getInstance(project: Project): EmulatorManager {
             return project.getService(EmulatorManager::class.java)
         }
 
         private const val ADB_INIT_TIMEOUT_MS = 10000L
+
+        // The child is already dead when we join its reader, so this is only a guard against a
+        // reader that somehow never sees EOF - never a normal wait.
+        private const val DRAIN_JOIN_TIMEOUT_MS = 2000L
     }
 
     /**
      * Initialize ADB bridge.
      * Must be called before any ADB operations.
+     *
+     * Idempotent and safe to call concurrently: the UI and an automated controller both drive
+     * this. A caller that arrives while an attempt is in flight waits for it and reports that
+     * attempt's verdict instead of creating a second AndroidDebugBridge.
      */
     fun initialize(): Boolean {
-        logger.info("🔧 Initializing ADB bridge...")
+        // Snapshot BEFORE contending for the lock. That is what separates "I waited for someone
+        // else's attempt" (take their result) from "I am a fresh call afterwards" (retry is
+        // allowed, so the user can fix the ADB path and try again).
+        val attemptsBefore = initAttempts
+        return initializeLocked(attemptsBefore)
+    }
 
+    @Synchronized
+    private fun initializeLocked(attemptsBefore: Long): Boolean {
         if (isInitialized && adbBridge != null) {
             logger.debug("ADB bridge already initialized")
             return true
         }
+
+        if (initAttempts != attemptsBefore) {
+            logger.debug("ADB initialization was performed by a concurrent caller (result=$lastInitResult)")
+            return lastInitResult
+        }
+
+        val result = doInitialize()
+        lastInitResult = result
+        initAttempts++
+        return result
+    }
+
+    private fun doInitialize(): Boolean {
+        logger.info("🔧 Initializing ADB bridge...")
 
         try {
             // Find ADB executable - first check settings, then auto-detect
@@ -73,35 +149,36 @@ class EmulatorManager(private val project: Project) {
             }
 
             // Create bridge with timeout to prevent hanging
-            adbBridge = AndroidDebugBridge.createBridge(
+            val bridge = AndroidDebugBridge.createBridge(
                 adbPath,
                 false,
                 ADB_INIT_TIMEOUT_MS,
                 TimeUnit.MILLISECONDS
             )
-            
-            if (adbBridge == null) {
+
+            if (bridge == null) {
                 logger.error("Failed to create ADB bridge")
                 return false
             }
-            
+            adbBridge = bridge
+
             // Wait for bridge to connect
             logger.debug("Waiting for ADB bridge to connect...")
             val startTime = System.currentTimeMillis()
-            while (!adbBridge!!.isConnected && 
+            while (!bridge.isConnected &&
                    System.currentTimeMillis() - startTime < ADB_INIT_TIMEOUT_MS) {
                 Thread.sleep(100)
             }
-            
-            if (!adbBridge!!.isConnected) {
+
+            if (!bridge.isConnected) {
                 logger.error("ADB bridge connection timeout")
                 return false
             }
-            
+
             // Wait for initial device list
             logger.debug("Waiting for device list...")
             var waited = 0L
-            while (!adbBridge!!.hasInitialDeviceList() && waited < ADB_INIT_TIMEOUT_MS) {
+            while (!bridge.hasInitialDeviceList() && waited < ADB_INIT_TIMEOUT_MS) {
                 Thread.sleep(100)
                 waited += 100
             }
@@ -133,6 +210,13 @@ class EmulatorManager(private val project: Project) {
             logger.info("✅ ADB bridge initialized successfully")
             return true
 
+        } catch (e: InterruptedException) {
+            // Restore the flag: the caller (an IDE background task, or a controller's worker)
+            // decides what cancellation means, and swallowing it here would hide it.
+            Thread.currentThread().interrupt()
+            logger.warn("⚠️ ADB bridge initialization interrupted")
+            isInitialized = false
+            return false
         } catch (e: Exception) {
             logger.error("Failed to initialize ADB bridge", e)
             isInitialized = false
@@ -141,29 +225,107 @@ class EmulatorManager(private val project: Project) {
     }
 
     /**
+     * The ADB executable this project actually uses: the Settings override when it is valid,
+     * the auto-detected one otherwise. Memoized, so an automated controller can call it as
+     * often as it likes to report which adb is driving the device.
+     */
+    fun getResolvedAdbPath(): String? = getConfiguredOrDetectedAdbPath()
+
+    /**
+     * Detach from ddmlib when the project closes.
+     *
+     * `AndroidDebugBridge.addDeviceChangeListener` registers into a STATIC list that outlives
+     * every project. Nothing ever removed the listener, so each opened-and-closed project left
+     * one behind holding this service — and through it the Project — alive for the rest of the
+     * IDE session, and every device event went on being delivered to dead projects.
+     */
+    override fun dispose() {
+        deviceListener?.let { listener ->
+            try {
+                AndroidDebugBridge.removeDeviceChangeListener(listener)
+                logger.debug("Detached ddmlib device listener")
+            } catch (e: Exception) {
+                logger.warn("⚠️ Failed to detach ddmlib device listener", e)
+            }
+        }
+        deviceListener = null
+        deviceChangeListeners.clear()
+    }
+
+    /**
+     * Drop the memoized ADB path so the next call re-resolves from scratch.
+     * Call this after the user edits the ADB path in Settings.
+     */
+    fun invalidateAdbPathCache() {
+        val previous = adbPathCache?.path
+        adbPathCache = null
+        if (previous != null) {
+            logger.debug("ADB path cache invalidated (was: $previous)")
+        }
+    }
+
+    /** The resolved ADB path, without triggering a search. Null until one has succeeded. */
+    fun getResolvedAdbPathOrNull(): String? = adbPathCache?.path
+
+    /**
      * Get ADB path from settings if configured, otherwise auto-detect.
      * This is the preferred method to get the ADB path.
+     *
+     * Memoized: the full search is expensive enough that it must not run once per adb command.
      */
     fun getConfiguredOrDetectedAdbPath(): String? {
-        // First, check if user has configured a path in settings
-        try {
-            val settingsStore = SettingsStore.getInstance(project)
-            val configuredPath = settingsStore.getAdbPath()
-            if (configuredPath != null) {
-                val file = File(configuredPath)
-                if (file.exists() && file.canExecute()) {
-                    logger.info("✅ Using configured ADB path: $configuredPath")
-                    return configuredPath
-                } else {
-                    logger.warn("⚠️ Configured ADB path is invalid: $configuredPath (falling back to auto-detect)")
-                }
+        val configuredPath = readConfiguredAdbPath()
+
+        val cache = adbPathCache
+        if (cache != null && cache.source == configuredPath) {
+            val cached = cache.path
+            if (cached != null) {
+                // One stat against the dozens the search costs: an SDK that was moved or removed
+                // mid-session is still noticed, everything else is served from the field.
+                if (File(cached).canExecute()) return cached
+                logger.warn("⚠️ Cached ADB path is no longer executable: $cached (re-resolving)")
+                adbPathCache = null
+            } else if (System.currentTimeMillis() - cache.failedAtMs < FAILED_RESOLUTION_TTL_MS) {
+                // Remember the MISS too. The search ends in two 5s login shells and a 10s mdfind,
+                // so on a machine with no SDK every single adb call used to pay ~25s over again.
+                return null
             }
-        } catch (e: Exception) {
-            logger.debug("Could not read settings (may be initializing): ${e.message}")
         }
 
-        // Fall back to auto-detection
-        return findAdbPath()
+        val resolved = when {
+            configuredPath == null -> findAdbPath()
+            File(configuredPath).let { it.exists() && it.canExecute() } -> {
+                logger.info("✅ Using configured ADB path: $configuredPath")
+                configuredPath
+            }
+            else -> {
+                logger.warn("⚠️ Configured ADB path is invalid: $configuredPath (falling back to auto-detect)")
+                findAdbPath()
+            }
+        }
+
+        adbPathCache = AdbPathCache(
+            path = resolved,
+            source = configuredPath,
+            failedAtMs = if (resolved == null) System.currentTimeMillis() else 0L
+        )
+        return resolved
+    }
+
+    /**
+     * The path the user configured in Settings, or null when auto-detection should be used.
+     * Never throws: the settings service can still be loading when the first scan fires.
+     */
+    private fun readConfiguredAdbPath(): String? {
+        return try {
+            SettingsStore.getInstance(project).getAdbPath()
+        } catch (e: Exception) {
+            logger.warn(
+                "⚠️ Could not read the ADB path from settings " +
+                "(${e.javaClass.simpleName}: ${e.message}) - falling back to auto-detection"
+            )
+            null
+        }
     }
 
     /**
@@ -207,33 +369,22 @@ class EmulatorManager(private val project: Project) {
         }
 
         // 4. macOS: Try to get ANDROID_HOME from shell profile (IntelliJ doesn't inherit shell env vars when opened from Dock)
+        // Order is load-bearing - the first shell that answers wins, and bash answered first
+        // before these two identical blocks were folded into one loop.
         if (isMacOS) {
-            try {
+            for ((shell, label) in listOf("/bin/bash" to "bash", "/bin/zsh" to "zsh")) {
                 // Run a login shell to get the proper environment variables
-                val shellEnvProcess = ProcessBuilder("/bin/bash", "-l", "-c", "echo \$ANDROID_HOME")
-                    .redirectErrorStream(true)
-                    .start()
-                val shellAndroidHome = shellEnvProcess.inputStream.bufferedReader().readText().trim()
-                shellEnvProcess.waitFor(5, TimeUnit.SECONDS)
-                if (shellAndroidHome.isNotBlank() && shellAndroidHome != "\$ANDROID_HOME") {
-                    checkAdbPath(File(shellAndroidHome, "platform-tools/$adbExecutable"), "Shell ANDROID_HOME (bash)")?.let { return it }
-                }
-            } catch (e: Exception) {
-                logger.debug("Failed to get ANDROID_HOME from bash: ${e.message}")
-            }
+                val shellAndroidHome = runCommand(
+                    listOf(shell, "-l", "-c", "echo \$ANDROID_HOME"),
+                    5, TimeUnit.SECONDS, "$label ANDROID_HOME probe"
+                )?.output?.trim().orEmpty()
 
-            // Also try zsh (default shell on modern macOS)
-            try {
-                val zshEnvProcess = ProcessBuilder("/bin/zsh", "-l", "-c", "echo \$ANDROID_HOME")
-                    .redirectErrorStream(true)
-                    .start()
-                val zshAndroidHome = zshEnvProcess.inputStream.bufferedReader().readText().trim()
-                zshEnvProcess.waitFor(5, TimeUnit.SECONDS)
-                if (zshAndroidHome.isNotBlank() && zshAndroidHome != "\$ANDROID_HOME") {
-                    checkAdbPath(File(zshAndroidHome, "platform-tools/$adbExecutable"), "Shell ANDROID_HOME (zsh)")?.let { return it }
+                if (shellAndroidHome.isNotBlank() && shellAndroidHome != "\$ANDROID_HOME") {
+                    checkAdbPath(
+                        File(shellAndroidHome, "platform-tools/$adbExecutable"),
+                        "Shell ANDROID_HOME ($label)"
+                    )?.let { return it }
                 }
-            } catch (e: Exception) {
-                logger.debug("Failed to get ANDROID_HOME from zsh: ${e.message}")
             }
         }
 
@@ -319,20 +470,17 @@ class EmulatorManager(private val project: Project) {
         }
 
         // 11. Try 'which adb' or 'where adb' command (non-login shell, may not work on macOS)
-        try {
-            val command = if (isWindows) arrayOf("cmd", "/c", "where", "adb") else arrayOf("which", "adb")
-            val process = Runtime.getRuntime().exec(command)
-            val result = process.inputStream.bufferedReader().readText().trim()
-            process.waitFor(5, TimeUnit.SECONDS)
-            if (process.exitValue() == 0 && result.isNotBlank()) {
-                val adbPath = File(result.lines().first())
+        val whichCommand = if (isWindows) listOf("cmd", "/c", "where", "adb") else listOf("which", "adb")
+        val whichResult = runCommand(whichCommand, 5, TimeUnit.SECONDS, "which/where adb")
+        if (whichResult != null && whichResult.exitCode == 0) {
+            val firstLine = whichResult.output.trim().lines().firstOrNull()?.trim()
+            if (!firstLine.isNullOrBlank()) {
+                val adbPath = File(firstLine)
                 if (adbPath.exists() && adbPath.canExecute()) {
                     logger.info("✅ ADB found via ${if (isWindows) "where" else "which"} command: ${adbPath.absolutePath}")
                     return adbPath.absolutePath
                 }
             }
-        } catch (e: Exception) {
-            logger.debug("Failed to run which/where command: ${e.message}")
         }
 
         // Log all tried paths for debugging (use WARN level to avoid IDE issues in CI environments)
@@ -465,20 +613,18 @@ class EmulatorManager(private val project: Project) {
     private fun findAdbWithLoginShell(): String? {
         val shells = listOf("/bin/zsh", "/bin/bash")
         for (shell in shells) {
-            try {
-                val process = ProcessBuilder(shell, "-l", "-c", "which adb")
-                    .redirectErrorStream(true)
-                    .start()
-                val result = process.inputStream.bufferedReader().readText().trim()
-                process.waitFor(5, TimeUnit.SECONDS)
-                if (process.exitValue() == 0 && result.isNotBlank()) {
-                    val adbPath = File(result)
-                    if (adbPath.exists() && adbPath.canExecute()) {
-                        return adbPath.absolutePath
-                    }
-                }
-            } catch (e: Exception) {
-                logger.debug("Failed to find adb with $shell: ${e.message}")
+            val result = runCommand(
+                listOf(shell, "-l", "-c", "which adb"),
+                5, TimeUnit.SECONDS, "login-shell which adb ($shell)"
+            ) ?: continue
+
+            if (result.exitCode != 0) continue
+            val candidate = result.output.trim().lines().firstOrNull()?.trim()
+            if (candidate.isNullOrBlank()) continue
+
+            val adbPath = File(candidate)
+            if (adbPath.exists() && adbPath.canExecute()) {
+                return adbPath.absolutePath
             }
         }
         return null
@@ -488,28 +634,97 @@ class EmulatorManager(private val project: Project) {
      * Find ADB using Spotlight search (mdfind) - macOS only.
      */
     private fun findAdbWithSpotlight(): String? {
-        try {
-            val process = ProcessBuilder("mdfind", "-name", "adb", "-onlyin", "/")
-                .redirectErrorStream(true)
-                .start()
-            val results = process.inputStream.bufferedReader().readLines()
-            process.waitFor(10, TimeUnit.SECONDS)
+        val result = runCommand(
+            listOf("mdfind", "-name", "adb", "-onlyin", "/"),
+            10, TimeUnit.SECONDS, "Spotlight adb search"
+        ) ?: return null
 
-            // Filter for actual adb executables in platform-tools
-            for (line in results) {
-                if (line.contains("platform-tools") && line.endsWith("/adb")) {
-                    val adbPath = File(line)
-                    if (adbPath.exists() && adbPath.canExecute()) {
-                        return adbPath.absolutePath
-                    }
+        // Filter for actual adb executables in platform-tools
+        for (line in result.output.lines()) {
+            if (line.contains("platform-tools") && line.endsWith("/adb")) {
+                val adbPath = File(line)
+                if (adbPath.exists() && adbPath.canExecute()) {
+                    return adbPath.absolutePath
                 }
             }
-        } catch (e: Exception) {
-            logger.debug("Failed to find adb with Spotlight: ${e.message}")
         }
         return null
     }
-    
+
+    /** Exit code plus merged stdout/stderr of an external command. */
+    private data class CommandResult(val exitCode: Int, val output: String)
+
+    /**
+     * Run an external command and capture its merged output under a hard time budget.
+     *
+     * Every call site used to either read the pipe and then waitFor(), or waitFor() and then
+     * read - both hang the caller for good if the child outgrows the OS pipe buffer or simply
+     * keeps stdout open (`adb` forks a server that inherits it, `mdfind -onlyin /` can print
+     * thousands of lines, a login shell may never exit). Draining on a separate thread while
+     * the caller waits with a *bounded* waitFor is the only shape that cannot deadlock, and the
+     * process is destroyed on the way out whatever happened.
+     *
+     * @return null when the command could not be started, timed out, or was interrupted -
+     *   never a partial result that a caller might mistake for an answer.
+     */
+    private fun runCommand(
+        command: List<String>,
+        timeout: Long,
+        unit: TimeUnit,
+        purpose: String
+    ): CommandResult? {
+        var process: Process? = null
+        try {
+            val started = ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start()
+            process = started
+
+            // None of these commands read stdin; a child blocked on it would never reach EOF
+            // on stdout, so close the write end immediately.
+            try {
+                started.outputStream.close()
+            } catch (e: Exception) {
+                logger.debug("Could not close stdin for $purpose: ${e.message}")
+            }
+
+            val output = StringBuilder()
+            val drain = Thread({
+                try {
+                    started.inputStream.bufferedReader().forEachLine { line ->
+                        synchronized(output) { output.append(line).append('\n') }
+                    }
+                } catch (e: Exception) {
+                    // Expected once the process is destroyed after a timeout: the pipe closes
+                    // under the reader, and there is no verdict left to salvage anyway.
+                    logger.debug("Output reader for $purpose stopped: ${e.message}")
+                }
+            }, "MockkHttp-cmd-$purpose")
+            drain.isDaemon = true
+            drain.start()
+
+            if (!started.waitFor(timeout, unit)) {
+                logger.warn("⚠️ Timed out after ${unit.toSeconds(timeout)}s running $purpose (${command.firstOrNull()})")
+                return null
+            }
+
+            // The child is already gone, so EOF is imminent - this join is a guard, not a wait.
+            drain.join(DRAIN_JOIN_TIMEOUT_MS)
+
+            return CommandResult(started.exitValue(), synchronized(output) { output.toString() })
+
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            logger.warn("⚠️ Interrupted while running $purpose")
+            return null
+        } catch (e: Exception) {
+            logger.warn("⚠️ Failed to run $purpose (${command.firstOrNull()}): ${e.javaClass.simpleName}: ${e.message}")
+            return null
+        } finally {
+            process?.destroyForcibly()
+        }
+    }
+
     /**
      * Get list of connected emulators.
      * Returns only emulators, not physical devices.
@@ -632,16 +847,16 @@ class EmulatorManager(private val project: Project) {
 
         try {
             logger.info("🔄 Setting up ADB reverse: device:$remotePort -> host:$localPort (device=$serialNumber)")
-            val process = ProcessBuilder(adbPath, "-s", serialNumber, "reverse", "tcp:$remotePort", "tcp:$localPort")
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().readText().trim()
-            val success = process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0
+            val result = runCommand(
+                listOf(adbPath, "-s", serialNumber, "reverse", "tcp:$remotePort", "tcp:$localPort"),
+                5, TimeUnit.SECONDS, "adb reverse (setup)"
+            )
+            val success = result != null && result.exitCode == 0
 
             if (success) {
                 logger.info("✅ ADB reverse port forwarding active: device:$remotePort -> host:$localPort")
             } else {
-                logger.error("❌ Failed to set up ADB reverse: $output")
+                logger.error("❌ Failed to set up ADB reverse: ${result?.output?.trim() ?: "command did not complete"}")
             }
             return success
         } catch (e: Exception) {
@@ -654,14 +869,29 @@ class EmulatorManager(private val project: Project) {
      * Remove ADB reverse port forwarding.
      */
     fun removeAdbReverse(serialNumber: String, remotePort: Int): Boolean {
-        val adbPath = getConfiguredOrDetectedAdbPath() ?: return false
+        val adbPath = getConfiguredOrDetectedAdbPath()
+        if (adbPath == null) {
+            logger.warn("⚠️ Cannot remove ADB reverse for port $remotePort: ADB path not found")
+            return false
+        }
 
         try {
             logger.info("🔄 Removing ADB reverse for port $remotePort (device=$serialNumber)")
-            val process = ProcessBuilder(adbPath, "-s", serialNumber, "reverse", "--remove", "tcp:$remotePort")
-                .redirectErrorStream(true)
-                .start()
-            process.waitFor(5, TimeUnit.SECONDS)
+            val result = runCommand(
+                listOf(adbPath, "-s", serialNumber, "reverse", "--remove", "tcp:$remotePort"),
+                5, TimeUnit.SECONDS, "adb reverse (remove)"
+            )
+
+            // Previously this reported success even when adb had failed or never returned,
+            // which is exactly the lie a blind caller cannot recover from.
+            if (result == null || result.exitCode != 0) {
+                logger.warn(
+                    "⚠️ Failed to remove ADB reverse for port $remotePort: " +
+                    (result?.output?.trim()?.takeIf { it.isNotEmpty() } ?: "command did not complete")
+                )
+                return false
+            }
+
             logger.info("✅ ADB reverse removed for port $remotePort")
             return true
         } catch (e: Exception) {

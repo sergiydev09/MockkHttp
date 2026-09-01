@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.7.0"
+version = "1.7.1"
 
 repositories {
     mavenCentral()
@@ -64,6 +64,40 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>1.7.1 — Correctness release</h3>
+            <p>No new features: fifteen bugs, several of which lost data silently.</p>
+            <ul>
+                <li><strong>Flutter: responses were truncated.</strong> Any reply from the plugin larger than a single
+                    TCP read — a mocked JSON body of a few KB is enough — was cut short, failed to parse, and the app
+                    silently fell back to the original response with no error anywhere. Requires <code>mockk_http</code> 1.7.1.</li>
+                <li><strong>Non-ASCII bodies were corrupted.</strong> The socket used the JVM's platform charset while both
+                    interceptors always write UTF-8. Now pinned to UTF-8 on both ends.</li>
+                <li><strong>Debug edits were lost after 60 seconds.</strong> The plugin waited five minutes for your decision
+                    while the app gave up after one, so a late edit was written to a dead socket and discarded without a word.
+                    The dialog now works to the app's real budget, warns when a response could not be delivered, and closes
+                    itself instead of leaving an orphaned modal on screen.</li>
+                <li><strong>Native Android apps never appeared in the app list.</strong> Only Flutter apps announced their
+                    package, so the interceptable-app detection was blind to OkHttp apps. Any message carrying a package
+                    name now registers it.</li>
+                <li><strong>Colliding rule and collection ids.</strong> Ids were derived from the millisecond clock, so two
+                    items created in the same millisecond shared one — and for collections the duplicate silently replaced
+                    the first, destroying it and orphaning its rules. Ids are UUIDs now, with a migration that recovers
+                    orphaned rules into Default (left disabled, so nothing starts mocking traffic unexpectedly).</li>
+                <li><strong>The Inspector could name the wrong mock rule.</strong> Two different matchers decided "was this
+                    mocked" and "which mock applies"; the label now comes from the same matcher that answered the app.</li>
+                <li><strong>Rules gained explicit match modes.</strong> Host and path can each be Exact, Wildcard or Regex
+                    instead of being interpreted as a regex behind your back. Existing rules load as Exact — the behaviour
+                    the applied path already had.</li>
+                <li><strong>No more spurious "IDE internal error" balloons.</strong> Ordinary conditions — a device
+                    unplugged, an app not installed — were reported to the IDE as plugin crashes.</li>
+                <li><strong>Leaks and lifecycle.</strong> Closing a project left its registration, its Project reference and
+                    a ddmlib listener alive for the rest of the session. The interceptor server now shuts down cleanly on
+                    plugin unload, refuses to resurrect after disposal, bounds its connection threads, and times out a
+                    request read so a vanished device cannot hold a slot forever.</li>
+                <li><strong>Concurrency.</strong> The project registry and the rule store could throw
+                    ConcurrentModificationException on the interceptor thread and drop a request under traffic.</li>
+            </ul>
+
             <h3>Version 1.7.0 - Flutter on Physical Android Devices</h3>
             <ul>
                 <li><strong>📲 Flutter apps are finally detected on real Android phones.</strong> Every one of the four detection methods was failing at once on physical hardware, so the app never appeared in the selector. All four are fixed.</li>

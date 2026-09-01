@@ -4,6 +4,7 @@ import com.android.ddmlib.IDevice
 import com.android.ddmlib.ShellCommandUnresponsiveException
 import com.android.ddmlib.SyncException
 import com.android.ddmlib.SyncService
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
@@ -81,6 +82,15 @@ class AppManager(project: Project) {
         private const val API_LEVEL_TIMEOUT_SECONDS = 5L
 
         private const val STREAM_SCAN_BLOCK_BYTES = 1 shl 20   // 1 MB
+
+        // `am force-stop` returns before the process is actually reaped, so a relaunch fired
+        // immediately after can attach to the dying instance.
+        private const val APP_RESTART_SETTLE_MS = 1000L
+
+        // adb takes a shell command *string*, not an argv, so a package name coming from an
+        // automated caller is pasted straight into a device-side shell. Real package names are
+        // only letters, digits, underscores and dots; anything else is a typo or an injection.
+        private val PACKAGE_NAME_PATTERN = Regex("[A-Za-z0-9_.]{1,255}")
     }
 
     /** Mutable per-scan tallies. AppManager is a project service: never keep these as fields. */
@@ -201,6 +211,7 @@ class AppManager(project: Project) {
                                 isPriority = pkg in priorityPackages || pkg in debuggable
                             )
                         } catch (e: ProcessCanceledException) {
+                            logger.debug("Detection cancelled for $pkg")
                             false
                         }
                         onProgress(scanned.incrementAndGet(), ordered.size, pkg)
@@ -545,6 +556,7 @@ class AppManager(project: Project) {
                             )
                             if (receiver.output.contains("DEBUGGABLE")) pkg else null
                         } catch (e: ProcessCanceledException) {
+                            logger.debug("run-as probe cancelled for $pkg")
                             null
                         } catch (e: Exception) {
                             // Old devices without run-as, or a package that vanished mid-scan.
@@ -877,7 +889,12 @@ class AppManager(project: Project) {
             )
 
         } catch (e: Exception) {
-            logger.debug("Failed to get details for $packageName: ${e.message}")
+            // A caller driving this blind gets an entry with every field null; without this
+            // line there is nothing anywhere saying why.
+            logger.warn(
+                "⚠️ Could not read details for $packageName " +
+                "(${e.javaClass.simpleName}: ${e.message}) - returning a bare entry"
+            )
             return AppInfo(
                 packageName = packageName,
                 appName = null,
@@ -891,11 +908,40 @@ class AppManager(project: Project) {
     }
 
     /**
+     * Guard for the lifecycle calls below: they are the surface an automated controller drives,
+     * so they must refuse a malformed name instead of pasting it into a device shell.
+     */
+    private fun isValidPackageName(packageName: String, operation: String): Boolean {
+        if (packageName.isNotBlank() && PACKAGE_NAME_PATTERN.matches(packageName)) return true
+        logger.warn("⚠️ Cannot $operation: '$packageName' is not a valid package name")
+        return false
+    }
+
+    /**
+     * The lifecycle calls below block on ADB for as long as the device takes to answer. They
+     * are headless - no dialogs, no Messages, nothing that needs the UI thread - but running
+     * one ON the EDT freezes the IDE, so make that visible instead of leaving it to look like
+     * a hang. Never fatal: an existing caller keeps working, just noisily.
+     */
+    private fun warnIfOnEdt(operation: String) {
+        if (ApplicationManager.getApplication()?.isDispatchThread == true) {
+            logger.warn(
+                "⚠️ $operation was called on the EDT; it blocks on ADB and will freeze the IDE. " +
+                "Call it from Task.Backgroundable or a controller thread."
+            )
+        }
+    }
+
+    /**
      * Force-stop an app and optionally restart it.
      * This is useful for clearing app's network cache after proxy configuration changes.
+     *
+     * Headless and blocking: safe to call off the EDT from an automated controller.
      */
     fun forceStopApp(serialNumber: String, packageName: String): Boolean {
         logger.info("🔴 Force-stopping app: $packageName on $serialNumber")
+        warnIfOnEdt("forceStopApp")
+        if (!isValidPackageName(packageName, "force-stop")) return false
 
         try {
             val device = getDevice(serialNumber)
@@ -924,9 +970,13 @@ class AppManager(project: Project) {
 
     /**
      * Start an app's main activity.
+     *
+     * Headless and blocking: safe to call off the EDT from an automated controller.
      */
     fun startApp(serialNumber: String, packageName: String): Boolean {
         logger.info("▶️ Starting app: $packageName on $serialNumber")
+        warnIfOnEdt("startApp")
+        if (!isValidPackageName(packageName, "start app")) return false
 
         try {
             val device = getDevice(serialNumber)
@@ -958,16 +1008,27 @@ class AppManager(project: Project) {
     /**
      * Restart an app (force-stop then start).
      * Useful to clear network cache and force re-connection through proxy.
+     *
+     * Headless and blocking (it sleeps between the two halves): call it off the EDT.
      */
     fun restartApp(serialNumber: String, packageName: String): Boolean {
         logger.info("🔄 Restarting app: $packageName")
+        // forceStopApp/startApp each warn on their own; restarting must not emit three.
 
         if (!forceStopApp(serialNumber, packageName)) {
             return false
         }
 
         // Wait briefly for app to fully stop
-        Thread.sleep(1000)
+        try {
+            Thread.sleep(APP_RESTART_SETTLE_MS)
+        } catch (e: InterruptedException) {
+            // A controller cancelling here leaves the app stopped, not restarted. Report that
+            // and hand the interrupt back instead of relaunching against the caller's wishes.
+            Thread.currentThread().interrupt()
+            logger.warn("⚠️ Restart of $packageName interrupted while it was stopping - the app is left stopped")
+            return false
+        }
 
         return startApp(serialNumber, packageName)
     }

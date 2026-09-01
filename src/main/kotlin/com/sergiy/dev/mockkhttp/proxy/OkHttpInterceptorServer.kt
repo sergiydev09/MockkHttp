@@ -1,8 +1,10 @@
 package com.sergiy.dev.mockkhttp.proxy
 
 import com.google.gson.Gson
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.DialogWrapper
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
 import com.sergiy.dev.mockkhttp.model.HttpRequestData
@@ -21,7 +23,7 @@ import javax.swing.SwingUtilities
  * This solves the problem of multiple projects trying to bind to the same port.
  */
 @Service(Service.Level.PROJECT)
-class OkHttpInterceptorServer(private val project: Project) {
+class OkHttpInterceptorServer(private val project: Project) : Disposable {
 
     private val logger = MockkHttpLogger.getInstance(project)
     private val flowStore = FlowStore.getInstance(project)
@@ -113,6 +115,22 @@ class OkHttpInterceptorServer(private val project: Project) {
     }
 
     /**
+     * Release the project's registration when the project closes.
+     *
+     * Nothing did this before: `stop()` is only reached from the Inspector's Stop button, so
+     * closing a project mid-capture left its registration in the application-level server —
+     * and with it a hard reference to the Project and to the whole plugin object graph, which
+     * the IDE could then never collect.
+     */
+    override fun dispose() {
+        if (isRunning) {
+            logger.info("🛑 Project closing while capture is running — unregistering")
+        }
+        globalServer.unregisterProject(project)
+        isRunning = false
+    }
+
+    /**
      * Change mode dynamically.
      */
     fun setMode(mode: Mode) {
@@ -190,39 +208,36 @@ class OkHttpInterceptorServer(private val project: Project) {
             }
 
             Mode.MOCKK -> {
-                // Mockk mode: auto-apply mock rules without pausing
-                logger.debug("🎭 Mockk mode: checking for matching rules...")
-                val matchingRule = findMatchingMockRule(httpFlowData)
+                // Mockk mode: the mock was already served by the app from the
+                // CHECK_MOCK reply, and this FLOW message is fire-and-forget —
+                // MockkHttpInterceptor.sendToPluginAsync writes and closes without
+                // reading. So nothing returned here can substitute a response; the
+                // only job left is labelling the flow with the rule that fired.
+                logger.debug("🔍 Mockk mode: resolving which rule the app served...")
+                val appliedRule = findAppliedMockRule(httpFlowData)
 
-                if (matchingRule != null) {
-                    logger.info("✅ Found matching mock rule: ${matchingRule.name}")
-
-                    // Mark flow as mocked and update in store
-                    val mockedFlow = httpFlowData.copy(
-                        mockApplied = true,
-                        mockRuleName = matchingRule.name,
-                        mockRuleId = matchingRule.id
+                if (appliedRule != null) {
+                    logger.info("✅ Flow served from mock rule: ${appliedRule.name}")
+                    flowStore.addFlow(
+                        httpFlowData.copy(
+                            mockApplied = true,
+                            mockRuleName = appliedRule.name,
+                            mockRuleId = appliedRule.id
+                        )
                     )
-                    flowStore.addFlow(mockedFlow)
-
-                    val modifiedResponse = ModifiedResponseData(
-                        statusCode = matchingRule.statusCode,
-                        headers = matchingRule.headers,
-                        body = matchingRule.content
-                    )
-                    logger.info("📋 Applied mock: ${matchingRule.name}")
-                    modifiedResponse
                 } else {
-                    logger.debug("📝 No matching mock rule, using original")
+                    logger.debug("📝 No matching mock rule, flow came from the network")
                     flowStore.addFlow(httpFlowData)
-                    ModifiedResponseData.original()
                 }
+
+                // Written into a stream the app never reads — see above.
+                ModifiedResponseData.original()
             }
 
             Mode.MOCKK_DEBUG -> {
                 // Mockk Debug mode: apply mock THEN pause for editing
                 logger.debug("🎭 Mockk Debug mode: checking for matching rules...")
-                val matchingRule = findMatchingMockRule(httpFlowData)
+                val matchingRule = findAppliedMockRule(httpFlowData)
 
                 // Create flow with mock applied (if found)
                 val flowWithMock = if (matchingRule != null) {
@@ -272,9 +287,15 @@ class OkHttpInterceptorServer(private val project: Project) {
         var result: ModifiedResponseData? = null
         var userModified = false
 
+        // Published so the timeout path can dismiss the dialog. Without it a
+        // stale modal stays on screen after the app has already moved on, and the
+        // next paused flow stacks another one on top of it.
+        val dialogRef = java.util.concurrent.atomic.AtomicReference<DebugInterceptDialog?>()
+
         SwingUtilities.invokeLater {
             try {
                 val dialog = DebugInterceptDialog(project, flowData)
+                dialogRef.set(dialog)
                 if (dialog.showAndGet()) {
                     val modified = dialog.getModifiedResponse()
                     if (modified != null) {
@@ -335,10 +356,23 @@ class OkHttpInterceptorServer(private val project: Project) {
             }
         }
 
-        // BLOCK until user responds (with timeout)
-        val completed = latch.await(5, TimeUnit.MINUTES)
+        // BLOCK until the user responds — but never longer than the app is
+        // willing to wait. See GlobalOkHttpInterceptorServer.DEBUG_DECISION_TIMEOUT_MS.
+        val completed = latch.await(
+            GlobalOkHttpInterceptorServer.DEBUG_DECISION_TIMEOUT_MS,
+            TimeUnit.MILLISECONDS
+        )
         if (!completed) {
-            logger.warn("⚠️  Timeout waiting for user input, using original response")
+            val seconds = GlobalOkHttpInterceptorServer.DEBUG_DECISION_TIMEOUT_MS / 1000
+            logger.warn(
+                "⚠️  No decision after ${seconds}s for ${flowData.request.method} ${flowData.request.getShortUrl()} — " +
+                        "the app is about to give up, so the original response is being used. " +
+                        "Any edit made in the dialog from now on would be discarded."
+            )
+            // Dismiss the orphaned dialog: there is no longer a flow to answer.
+            SwingUtilities.invokeLater {
+                dialogRef.get()?.takeIf { it.isShowing }?.close(DialogWrapper.CANCEL_EXIT_CODE)
+            }
             return Pair(ModifiedResponseData.original(), false)
         }
 
@@ -377,72 +411,16 @@ class OkHttpInterceptorServer(private val project: Project) {
     }
 
     /**
-     * Find matching mock rule for a flow.
+     * Resolve which mock rule the app actually served, so the Inspector labels a
+     * flow with the rule that really fired.
+     *
+     * Delegates to the same structured matcher that answered the app's CHECK_MOCK
+     * message (see GlobalOkHttpInterceptorServer.findMockForRequest). A second
+     * implementation used to live here and treated host/path as regex, so it could
+     * disagree with the decision the app had already acted on.
      */
-    private fun findMatchingMockRule(flowData: HttpFlowData): com.sergiy.dev.mockkhttp.store.MockkRulesStore.MockkRule? {
-        val allRules = mockkRulesStore.getAllRules()
-
-        for (rule in allRules) {
-            if (!rule.enabled) continue
-
-            // Skip if rule's collection is disabled
-            val ruleCollection = mockkRulesStore.getCollection(rule.collectionId)
-            if (ruleCollection == null || !ruleCollection.enabled) {
-                continue
-            }
-
-            // Match method
-            if (rule.method != flowData.request.method) continue
-
-            // Match URL pattern
-            if (!matchesUrlPattern(flowData.request.url, rule)) continue
-
-            // Found a match!
-            return rule
-        }
-
-        return null
-    }
-
-    /**
-     * Check if URL matches the pattern.
-     */
-    private fun matchesUrlPattern(url: String, rule: com.sergiy.dev.mockkhttp.store.MockkRulesStore.MockkRule): Boolean {
-        try {
-            val parsedUrl = java.net.URI.create(url).toURL()
-
-            // Match scheme
-            if (rule.scheme.isNotEmpty() && parsedUrl.protocol != rule.scheme) {
-                return false
-            }
-
-            // Match host
-            if (rule.host.isNotEmpty() && !parsedUrl.host.matches(Regex(rule.host))) {
-                return false
-            }
-
-            // Match path
-            if (rule.path.isNotEmpty() && !parsedUrl.path.matches(Regex(rule.path))) {
-                return false
-            }
-
-            // Match query parameters if specified
-            // (Simple implementation - just check if all required params exist)
-            if (rule.queryParams.isNotEmpty()) {
-                val query = parsedUrl.query ?: ""
-                for (param in rule.queryParams) {
-                    if (!query.contains("${param.key}=${param.value}")) {
-                        return false
-                    }
-                }
-            }
-
-            return true
-        } catch (e: Exception) {
-            logger.warn("Failed to parse URL for matching: $url", e)
-            return false
-        }
-    }
+    private fun findAppliedMockRule(flowData: HttpFlowData): com.sergiy.dev.mockkhttp.store.MockkRulesStore.MockkRule? =
+        mockkRulesStore.findMatchingRuleForUrl(flowData.request.method, flowData.request.url)
 
     /**
      * Convert Android flow data to HttpFlowData.
@@ -508,6 +486,16 @@ data class AndroidResponseData(
     val body: String
 )
 
+/**
+ * WIRE format of a modified response — the JSON actually sent back to the app.
+ *
+ * Careful: [com.sergiy.dev.mockkhttp.model.ModifiedResponseData] is a DIFFERENT
+ * class with the same name, used inside the plugin, whose body field is called
+ * `content`. This one must stay `body`, because that is the name the Android and
+ * Flutter interceptors deserialise. Anything writing to the socket uses this one.
+ *
+ * All-null means "keep the original response".
+ */
 data class ModifiedResponseData(
     val statusCode: Int?,
     val headers: Map<String, String>?,

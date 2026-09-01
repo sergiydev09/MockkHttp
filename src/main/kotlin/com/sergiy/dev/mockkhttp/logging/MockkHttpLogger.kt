@@ -134,7 +134,34 @@ class MockkHttpLogger() {
         }
     }
     
+    /**
+     * An operation failed. Shown as ERROR in the plugin's Logs tab.
+     *
+     * Goes to the platform log at WARN, NOT at error, and that is deliberate:
+     * `com.intellij.openapi.diagnostic.Logger.error()` is the platform's signal for a broken
+     * invariant — it raises the "IDE internal error" balloon and opens the exception-report
+     * dialog. Nearly all 56 call sites here report ordinary operational conditions (a device
+     * unplugged, an app not installed, a malformed URL from the network), so every one of them
+     * was accusing the IDE of crashing. The message and stack trace still reach idea.log in full.
+     *
+     * Use [internalError] for an actual programming bug that should be reported.
+     */
     fun error(message: String, throwable: Throwable? = null) {
+        log(LogLevel.ERROR, message, throwable)
+        if (throwable != null) {
+            platformLogger.warn(message, throwable)
+        } else {
+            platformLogger.warn(message)
+        }
+    }
+
+    /**
+     * A broken invariant — a bug in the plugin, not a condition of the environment.
+     *
+     * Raises the platform's error-report path on purpose. Reserve it for states that should be
+     * impossible; anything the user can cause by unplugging a cable belongs in [error].
+     */
+    fun internalError(message: String, throwable: Throwable? = null) {
         log(LogLevel.ERROR, message, throwable)
         if (throwable != null) {
             platformLogger.error(message, throwable)

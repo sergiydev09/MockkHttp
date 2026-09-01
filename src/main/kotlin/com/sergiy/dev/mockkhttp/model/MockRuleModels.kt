@@ -11,12 +11,16 @@ data class QueryParam(
 )
 
 /**
- * Matching type for parameters
+ * Matching type for a single piece of a rule (query param value, host or path).
+ *
+ * The meaning of [WILDCARD] differs by field on purpose: a query param has no useful
+ * pattern to glob against (the rule only cares that the key is present), while a host
+ * or a path is exactly where `*` patterns are worth having.
  */
 enum class MatchType {
-    EXACT,      // Value must be exact
-    WILDCARD,   // Any value (ignores the parameter)
-    REGEX       // Regular expression (future)
+    EXACT,      // Query param: value must be equal. Host/path: literal comparison (host is case-insensitive)
+    WILDCARD,   // Query param: any value (only presence is checked). Host/path: `*` matches any run of characters
+    REGEX       // Full-match regular expression against the value
 }
 
 /**
@@ -29,14 +33,14 @@ data class MockkCollection(
     var description: String = "",  // Optional description
     var enabled: Boolean = true,
     var createdAt: Long = System.currentTimeMillis(),
-    var version: String = "1.7.0"  // Plugin version when created
+    var version: String = "1.7.1"  // Plugin version when created
 )
 
 /**
  * Format for exporting/importing collections
  */
 data class MockkCollectionExport(
-    val pluginVersion: String = "1.7.0",
+    val pluginVersion: String = "1.7.1",
     val exportDate: Long = System.currentTimeMillis(),
     val collections: List<MockkCollectionData> = emptyList()
 )
@@ -64,7 +68,11 @@ data class MockkRuleData(
     var queryParams: MutableList<QueryParam> = mutableListOf(),
     var statusCode: Int = 200,
     var headers: Map<String, String> = emptyMap(),
-    var content: String = ""
+    var content: String = "",
+    // Export files written before per-field match modes existed have no such keys; Gson keeps
+    // these defaults, which is the same EXACT behaviour those rules had in the store.
+    var hostMatch: MatchType = MatchType.EXACT,
+    var pathMatch: MatchType = MatchType.EXACT
 )
 
 /**
@@ -75,7 +83,11 @@ data class StructuredUrl(
     var host: String = "",
     var port: Int? = null,
     var path: String = "",
-    var queryParams: MutableList<QueryParam> = mutableListOf()
+    var queryParams: MutableList<QueryParam> = mutableListOf(),
+    // How the host/path above should be compared against a real request. Trailing with
+    // defaults so every existing positional construction keeps compiling.
+    var hostMatch: MatchType = MatchType.EXACT,
+    var pathMatch: MatchType = MatchType.EXACT
 ) {
     /**
      * Converts the structured URL to a complete string

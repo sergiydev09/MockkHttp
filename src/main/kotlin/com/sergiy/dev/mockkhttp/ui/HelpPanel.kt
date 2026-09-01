@@ -36,7 +36,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
     companion object {
         // Versions shown in the setup snippets — keep in sync on releases (see VERSION_FILES.md)
         private const val GRADLE_PLUGIN_VERSION = "1.6.1"
-        private const val FLUTTER_PACKAGE_VERSION = "1.7.0"
+        private const val FLUTTER_PACKAGE_VERSION = "1.7.1"
 
         private const val CARD_ANDROID = "android"
         private const val CARD_FLUTTER = "flutter"

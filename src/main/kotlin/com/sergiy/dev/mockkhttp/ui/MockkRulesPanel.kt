@@ -802,7 +802,9 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         val params = rule.queryParams.sortedBy { it.key }.joinToString(",") {
             "${it.key}=${it.value}:${it.required}:${it.matchType}"
         }
-        return "${rule.method}:${rule.scheme}:${rule.host}:${rule.path}:$params"
+        // The match modes are part of a rule's identity: api.example.com as EXACT and as REGEX
+        // select different traffic, so two rules that differ only there are NOT duplicates.
+        return "${rule.method}:${rule.scheme}:${rule.host}/${rule.hostMatch}:${rule.path}/${rule.pathMatch}:$params"
     }
 
     /**
@@ -878,11 +880,13 @@ class MockkRulesPanel(private val project: Project) : JPanel(BorderLayout()) {
         // Must have same scheme
         if (rule1.scheme != rule2.scheme) return false
 
-        // Must have same host pattern
+        // Must have same host pattern, compared the same way
         if (rule1.host != rule2.host) return false
+        if (rule1.hostMatch != rule2.hostMatch) return false
 
-        // Must have same path pattern
+        // Must have same path pattern, compared the same way
         if (rule1.path != rule2.path) return false
+        if (rule1.pathMatch != rule2.pathMatch) return false
 
         // Must have same query parameters
         if (rule1.queryParams.size != rule2.queryParams.size) return false

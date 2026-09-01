@@ -164,9 +164,11 @@ class MockkHttpPluginClient {
       socket.add(utf8.encode('$pingMessage\n'));
       await socket.flush();
 
-      final response = await socket.first
-          .timeout(const Duration(milliseconds: _pingTimeoutMs));
-      return utf8.decode(response).startsWith('PONG');
+      final response = await _readMessage(
+        socket,
+        const Duration(milliseconds: _pingTimeoutMs),
+      );
+      return response != null && response.startsWith('PONG');
     } catch (_) {
       return false;
     } finally {
@@ -209,13 +211,17 @@ class MockkHttpPluginClient {
       socket.add(utf8.encode('$json\n'));
       await socket.flush();
 
-      final responseBytes = await socket.first
-          .timeout(const Duration(milliseconds: _connectionTimeoutMs));
-      final responseJson = utf8.decode(responseBytes).trim();
+      final responseJson = (await _readMessage(
+            socket,
+            const Duration(milliseconds: _connectionTimeoutMs),
+          ))
+          ?.trim();
 
       await socket.close();
 
-      if (responseJson.isEmpty || responseJson == 'PONG') return null;
+      if (responseJson == null || responseJson.isEmpty || responseJson == 'PONG') {
+        return null;
+      }
 
       return MockCheckResponse.fromJson(
         jsonDecode(responseJson) as Map<String, dynamic>,
@@ -239,13 +245,17 @@ class MockkHttpPluginClient {
       socket.add(utf8.encode('$json\n'));
       await socket.flush();
 
-      final responseBytes = await socket.first
-          .timeout(const Duration(milliseconds: _readTimeoutMs));
-      final responseJson = utf8.decode(responseBytes).trim();
+      final responseJson = (await _readMessage(
+            socket,
+            const Duration(milliseconds: _readTimeoutMs),
+          ))
+          ?.trim();
 
       await socket.close();
 
-      if (responseJson.isEmpty || responseJson == 'PONG') return null;
+      if (responseJson == null || responseJson.isEmpty || responseJson == 'PONG') {
+        return null;
+      }
 
       return ModifiedResponseData.fromJson(
         jsonDecode(responseJson) as Map<String, dynamic>,
@@ -253,6 +263,35 @@ class MockkHttpPluginClient {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Read ONE newline-delimited message from [socket], reassembling TCP chunks.
+  ///
+  /// `socket.first` — used here until now — takes only the FIRST data event.
+  /// Anything the plugin sends that does not fit in a single read was silently
+  /// truncated: `jsonDecode` then threw into the callers' catch-all and the app
+  /// fell back to the original response with no trace anywhere. A mocked JSON
+  /// body of a few KB is enough to trigger it.
+  ///
+  /// [timeout] applies BETWEEN events, not to the whole message — matching the
+  /// Android library, where `soTimeout` is likewise a per-read deadline.
+  ///
+  /// Returns null when the peer closes without sending anything.
+  static Future<String?> _readMessage(Socket socket, Duration timeout) async {
+    final buffer = StringBuffer();
+
+    await for (final chunk in utf8.decoder.bind(socket).timeout(timeout)) {
+      buffer.write(chunk);
+      final text = buffer.toString();
+      final newline = text.indexOf('\n');
+      if (newline >= 0) return text.substring(0, newline);
+    }
+
+    // Stream ended without a newline: the plugin always uses println(), so this
+    // means a truncated or empty reply. Return what arrived and let the caller
+    // decide — an empty string is treated as "no reply" by every call site.
+    final text = buffer.toString();
+    return text.isEmpty ? null : text;
   }
 
   /// Send a flow to the plugin without waiting (Recording mode).

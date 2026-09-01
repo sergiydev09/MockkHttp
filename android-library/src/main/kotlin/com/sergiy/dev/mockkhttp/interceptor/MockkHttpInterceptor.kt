@@ -332,7 +332,15 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         val connected = try {
             Socket(pluginHost, pluginPort).use { socket ->
                 socket.soTimeout = PING_TIMEOUT_MS
-                socket.getOutputStream().write("PING\n".toByteArray())
+
+                // Announce the package, not just "PING": the plugin records the
+                // name in knownMockkHttpPackages and AppManager uses that set to
+                // list interceptable apps. Sending a bare PING (as this did until
+                // now) meant native Android apps never registered, so only Flutter
+                // apps — which have always sent PING:<package> — showed up.
+                val packageName = appContext?.packageName
+                val ping = if (packageName.isNullOrBlank()) "PING" else "PING:$packageName"
+                socket.getOutputStream().write("$ping\n".toByteArray())
                 socket.getOutputStream().flush()
 
                 val response = ByteArray(4)

@@ -1,3 +1,14 @@
+## 1.7.1
+
+- **Fix: replies from the plugin were silently truncated.** The client read a reply with
+  `socket.first`, which yields only the FIRST data event — so anything that did not arrive in a
+  single TCP read (a mocked JSON body of a few KB is enough) was cut short. The truncated text
+  failed to parse, the error was swallowed, and the app fell back to the original response with
+  no trace anywhere: a mock or a Debug edit simply did not apply, at random, depending on size.
+  Replies are now reassembled until the plugin's newline, so a body of any size arrives intact —
+  including one split mid-character, which previously also corrupted the surrounding text.
+  Affects mocked responses, Debug-mode edits and `CHECK_MOCK` alike.
+
 ## 1.7.0
 
 - **Fix: physical Android devices now work.** The plugin host was hardcoded to `10.0.2.2` on
