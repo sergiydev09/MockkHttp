@@ -94,28 +94,33 @@ intellijPlatform {
                     the bridge rewrites REST routes into MCP tool calls on errors and successes alike.
                     <code>mockkhttp_docs</code> serves ten topics (quickstart, modes, mocking, matching, flows,
                     automated_test, …) written for a model to act on.</li>
-                <li><strong>💤 An idle IDE costs the app nothing.</strong> With no capture session running, port 9876 is
-                    closed and any client that still asks is told <code>IDLE</code>, so the app stops buffering response
-                    bodies and shipping flows nobody reads. Older clients keep their previous behaviour.</li>
+                <li><strong>💤 An idle IDE costs the app nothing.</strong> With no capture session owning the app's traffic,
+                    any client that asks is told <code>IDLE</code>, so the app stops buffering response bodies and shipping
+                    flows nobody reads; with the IDE fully idle, port 9876 closes as well. Older clients keep their
+                    previous behaviour.</li>
                 <li><strong>🐦 Flutter — <code>mockk_http</code> 1.8.0.</strong> Honours IDLE; request bodies are no longer
                     serialised before the plugin has asked for them; two requests started in the same millisecond no longer
                     share a flow id (which broke flow lookups and <code>from_flow_id</code>); and identical requests are no
                     longer dropped: the 500&nbsp;ms deduplication window silently discarded a genuine second request to the
                     same URL — two screens loading the same data, an immediate retry — so the log was missing calls the app
                     really made. The two capture layers now coordinate by request identity instead, and every request the
-                    app makes is a flow. (The native Android interceptor, unchanged at 1.6.1, keeps its window; set
-                    <code>MockkHttpInterceptor.enableDeduplication = false</code> when a test depends on fast identical retries.)</li>
+                    app makes is a flow. The native Android interceptor 1.8.0 drops its window the same way: a second
+                    copy of the interceptor in one chain passes the request through by a tag, and the Gradle plugin's
+                    <code>install(builder)</code> no longer stacks copies on a builder built twice.</li>
                 <li><strong>📊 The client reports its own numbers.</strong> <code>mockk_http</code> 1.8.0 sends its
                     library, version, platform and counters (flows sent by layer, passes one layer yielded to the
                     other, claims made and withdrawn) with every message; <code>status</code> and the flow listing
                     expose the latest as <code>client</code>, so an agent can check from outside that one request is
                     one flow instead of trusting it.</li>
-                <li><strong>🧪 A real test suite.</strong> 205 tests across the plugin and the bridge (plus 31 in the Flutter package), with a build guard that
-                    fails when the suite is empty or silently skipped.</li>
+                <li><strong>🔐 Credentials in the URL.</strong> A query parameter named like a credential (<code>appid</code>,
+                    <code>api_key</code>, <code>token</code>, …) is redacted like a header on every surface an agent reads, and a
+                    rule built from a captured flow never keeps its value.</li>
+                <li><strong>🧪 A real test suite.</strong> 229 tests across the plugin and the MCP bridge, 57 in the Flutter package
+                    and 4 in the Android library, with a build guard that fails when the suite is empty or silently skipped.</li>
             </ul>
             <p>Not in this release, and reported as <code>not_implemented_yet</code> by <code>status</code>: arms/runs/verify,
-                agent-driven Debug pauses, launching the app under test. Gradle plugin and Android library are unchanged
-                at 1.6.1.</p>
+                agent-driven Debug pauses, launching the app under test. IntelliJ plugin, Gradle plugin, Android library
+                and the <code>mockk_http</code> Flutter package are all released as 1.8.0.</p>
 
             <h3>1.7.1 — Correctness release</h3>
             <p>No new features: fifteen bugs, several of which lost data silently.</p>

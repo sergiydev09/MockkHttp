@@ -382,7 +382,7 @@ object Discovery {
                 "$dir holds ${scan.unreadable} file(s) this bridge could not parse. They may be from a " +
                     "newer plugin than this bridge jar; update MockkHttp and restart the IDE."
             else ->
-                "$dir is empty. Agent control may be switched off in MockkHttp -> Settings -> Agent Control."
+                "$dir is empty. Agent control may be switched off in MockkHttp -> Settings -> AI Agent Access."
         }
         return "No live MockkHttp instance found for $cwd; open the project in Android Studio, or set " +
             "MOCKKHTTP_BASE_URL and MOCKKHTTP_TOKEN.\n$detail"

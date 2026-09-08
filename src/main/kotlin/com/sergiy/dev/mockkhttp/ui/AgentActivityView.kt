@@ -417,14 +417,14 @@ class AgentActivityView(
                 agentLabel.text = "🤖 Agent control off"
                 agentLabel.foreground = JBColor.GRAY
                 agentLabel.toolTipText =
-                    "No agent can reach this IDE. Switch it on in MockkHttp → Settings → Agent Control."
+                    "No agent can reach this IDE. Switch it on in MockkHttp → Settings → AI Agent Access."
             }
 
             presence == Presence.NOT_LISTENING -> {
                 agentLabel.text = "🤖 Agent control not listening"
                 agentLabel.foreground = AMBER
                 agentLabel.toolTipText =
-                    "Agent control is on but the local endpoint is not bound; Settings → Agent Control says why."
+                    "Agent control is on but the local endpoint is not bound; Settings → AI Agent Access says why."
             }
 
             auditLog.isActive() -> {

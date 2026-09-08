@@ -6,7 +6,7 @@
 
 **Network Interceptor Plugin for Android Studio & IntelliJ IDEA**
 
-Intercept, debug and mock HTTP/HTTPS traffic from Android and Flutter apps (Android & iOS) in real-time
+Intercept, debug and mock HTTP/HTTPS traffic from Android and Flutter apps (Android & iOS) in real-time — from the IDE, or from an AI agent through the built-in MCP server
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-IntelliJ-orange.svg)](https://www.jetbrains.com/idea/)
@@ -71,7 +71,7 @@ In your app's `build.gradle.kts`:
 plugins {
     id("com.android.application")
     kotlin("android")
-    id("io.github.sergiydev09.mockkhttp") version "1.6.1"  // Add this
+    id("io.github.sergiydev09.mockkhttp") version "1.8.0"  // Add this
 }
 
 // That's it! No need to add dependencies manually.
@@ -156,10 +156,10 @@ The same API is available over plain HTTP for scripts: `GET http://127.0.0.1:<po
 
 - The control plane listens on `127.0.0.1` only, on a port the OS picks, behind a bearer token that rotates on every IDE start (and on **Revoke**). Nothing on your network can reach it, and no setting opens it up.
 - **Off** closes the port and deletes the discovery file; **Read-only** serves reads and refuses every change with 403.
-- Captured credentials (`Authorization`, `Cookie`, API keys) are returned as `<redacted:Nb>` with their true length. **Allow an agent to read redacted header values** is off by default, resets on every IDE restart, and every answer that reveals a credential says so in a warning.
+- Captured credentials — `Authorization`, `Cookie`, API keys, whether in a header or in the query string (`appid`, `api_key`, `token`, …) — are returned as `<redacted:Nb>` with their true length, and a mock rule built from a captured flow never keeps them. **Allow an agent to read redacted header values** is off by default, resets on every IDE restart, and every answer that reveals a credential says so in a warning.
 - Every call an agent makes is listed in the Inspector next to the traffic your app produced.
 
-Not yet available to agents (reported as `not_implemented_yet` by `mockkhttp_status`): answering Debug-mode pauses, assertion "arms" and test runs, launching the app under test.
+Not yet available to agents (reported as `not_implemented_yet` by `mockkhttp_status`): answering Debug-mode pauses, assertion "arms", test runs and their verification, launching the app under test.
 
 ---
 
@@ -246,12 +246,12 @@ The Gradle plugin scans your dependencies and **fails the build** if MockkHttp i
 // ❌ DON'T add the dependency manually - the plugin does it automatically!
 dependencies {
     // Don't do this - it's redundant and may cause conflicts
-    debugImplementation("com.github.sergiydev09.MockkHttp:mockk-http-interceptor:1.6.1")
+    debugImplementation("com.github.sergiydev09.MockkHttp:mockk-http-interceptor:1.8.0")
 }
 
 // ✅ Just apply the plugin - it handles everything
 plugins {
-    id("io.github.sergiydev09.mockkhttp") version "1.6.1"
+    id("io.github.sergiydev09.mockkhttp") version "1.8.0"
 }
 ```
 
@@ -588,7 +588,7 @@ pluginManagement {
 
 # In your test app's build.gradle.kts:
 plugins {
-    id("io.github.sergiydev09.mockkhttp") version "1.6.1"
+    id("io.github.sergiydev09.mockkhttp") version "1.8.0"
 }
 ```
 

@@ -239,7 +239,7 @@ class ControlAuth {
             return ApiError(
                 ErrorCode.FORBIDDEN,
                 "Agent control is switched off for this IDE.",
-                "Turn it on in the MockkHttp tool window → Settings → Agent Control, then re-read ~/.mockkhttp/instances/<id>.json: the port and token change when it is re-enabled."
+                "Turn it on in the MockkHttp tool window → Settings → AI Agent Access, then re-read ~/.mockkhttp/instances/<id>.json: the port and token change when it is re-enabled."
             )
         }
 
@@ -274,7 +274,7 @@ class ControlAuth {
             return ApiError(
                 ErrorCode.READ_ONLY,
                 "Agent control is READ_ONLY, so ${request.method} ${request.path} is refused.",
-                "Every GET still works — read flows, rules and status freely. To allow writes, set Agent Control to Full in the MockkHttp tool window → Settings."
+                "Every GET still works — read flows, rules and status freely. To allow writes, set AI Agent Access to Full in the MockkHttp tool window → Settings."
             )
         }
 

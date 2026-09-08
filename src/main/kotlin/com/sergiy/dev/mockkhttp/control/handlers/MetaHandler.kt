@@ -460,9 +460,9 @@ internal object AgentDocs {
             - `exclusive: true` on enable disables competing rules on the same endpoint, so the flip
               is atomic from the app's point of view.
 
-            Be aware of client-side deduplication: the shipped interceptor drops an identical request
-            repeated within 500 ms, so a fast retry may never reach the plugin at all. See
-            `topic=troubleshooting`.
+            Client-side deduplication is gone in the 1.8.0 clients (Flutter and native Android): every
+            request the app makes is a flow. An app still on the 1.6.1 Gradle plugin drops an identical
+            request repeated within 500 ms; see `topic=troubleshooting`.
         """.trimIndent(),
         relatedRoutes = listOf("POST /v1/projects/{pid}/mocks/{rule_id}/enable")
     )
@@ -511,12 +511,13 @@ internal object AgentDocs {
             `session.instrumented_packages` means no app has ever talked to this plugin — the app
             build is missing the interceptor, or it is not reaching the host.
 
-            **"My retry never arrived."** On native Android the shipped interceptor (1.6.1) deduplicates
-            IDENTICAL requests — same method, scheme, host and path — inside a 500 ms window, so a fast
-            retry of the very same call can be dropped before it reaches the plugin; turn it off when a
-            test depends on repeated identical calls with `MockkHttpInterceptor.enableDeduplication =
-            false` in the debug app's `onCreate`. Flutter (`mockk_http` 1.8.0) has no window: every
-            request the app makes is a flow, and `client.stats` on `status` is the count to compare.
+            **"My retry never arrived."** With the 1.8.0 clients — `mockk_http` on Flutter, the 1.8.0
+            Gradle plugin on native Android — there is no deduplication window: every request the app
+            makes is a flow, and `client.stats` on `status` is the count to compare. An app still on the
+            1.6.1 Gradle plugin deduplicates IDENTICAL requests — same method, scheme, host and path —
+            inside a 500 ms window, so a fast retry of the very same call can be dropped before it
+            reaches the plugin: upgrade the plugin, or turn it off with
+            `MockkHttpInterceptor.enableDeduplication = false` in the debug app's `onCreate`.
 
             **`AMBIGUOUS_PROJECT`.** Several projects are open. Pass the `{pid}` from
             `GET /v1/projects` in the path.

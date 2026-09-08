@@ -1,5 +1,9 @@
 ## 1.8.0
 
+- **AI agents.** The MockkHttp plugin 1.8.0 ships an MCP server: with this package in the app, Claude
+  Code or any MCP client can read the app's traffic, build mocks from captured calls and drive the
+  session. Nothing to add in the app; see the plugin README.
+
 - **IDLE mode: nothing to pay while nobody is capturing.** The MockkHttp plugin 1.8.0 answers
   `IDLE` when no capture session owns this app's traffic (nobody pressed Start, or the session's
   package filter excludes the app). The package now passes such requests through untouched: no

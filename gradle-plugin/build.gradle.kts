@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "io.github.sergiydev09.mockkhttp"
-version = "1.6.1"
+version = "1.8.0"
 
 repositories {
     google()
@@ -35,8 +35,8 @@ gradlePlugin {
             id = "io.github.sergiydev09.mockkhttp"
             implementationClass = "com.sergiy.dev.mockkhttp.gradle.MockkHttpGradlePlugin"
             displayName = "MockkHttp Gradle Plugin"
-            description = "Automatically inject network interceptor for MockkHttp IntelliJ plugin. Intercept and modify HTTP traffic from Android apps in debug builds only."
-            tags = listOf("android", "okhttp", "network", "debugging", "interceptor", "http", "testing")
+            description = "Injects the MockkHttp interceptor into Android debug builds (OkHttp/Retrofit, no code changes), so the MockkHttp IntelliJ/Android Studio plugin can record, debug and mock the app's HTTP traffic — and, since 1.8.0, so can an AI agent over the plugin's built-in MCP server. Every request the app makes is one flow; debug builds only, release builds untouched."
+            tags = listOf("android", "okhttp", "network", "debugging", "interceptor", "http", "testing", "mock", "mcp", "ai-agent")
         }
     }
 }

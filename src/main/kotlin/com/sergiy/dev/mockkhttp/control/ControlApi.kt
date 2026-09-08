@@ -40,7 +40,7 @@ data class ControlEnvironment(
     val instanceId: String? = null,
     val controlPort: Int? = null,
     val agentControl: String = AGENT_CONTROL_FULL,
-    /** Backs `include_secrets`. Stays false until Settings → *Allow agent to reveal secrets* exists. */
+    /** Backs `include_secrets`. Stays false until Settings → *Allow an agent to read redacted header values* exists. */
     val revealSecrets: Boolean = false
 )
 
@@ -2435,7 +2435,7 @@ class ControlApi {
             return ApiResult.fail(
                 ErrorCode.REVEAL_DISABLED,
                 "Revealing request/response secrets is disabled for this IDE.",
-                "Turn on Settings → MockkHttp → Allow agent to reveal secrets, or read the flow without include_secrets — " +
+                "Turn on Settings → MockkHttp → Allow an agent to read redacted header values, or read the flow without include_secrets — " +
                         "header values come back as <redacted:Nb> with their true length."
             )
         }

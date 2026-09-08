@@ -485,7 +485,7 @@ class RestClient {
                 "secrets. Repeat the call without include_secrets."
         "READ_ONLY" ->
             "Agent control is read-only, so reads work and writes do not. Ask the user to set MockkHttp -> " +
-                "Settings -> Agent Control to Full."
+                "Settings -> AI Agent Access to Full."
         "PAUSE_POLICY_REQUIRED" ->
             "DEBUG and MOCKK_DEBUG pause EVERY request the app makes, including background polling, and nothing " +
                 "can answer that pause in this milestone. Stay in MOCKK and use mock rules instead."
@@ -501,9 +501,9 @@ class RestClient {
             "Send a smaller body (the control plane caps requests at 8 MB)."
         else -> when (status) {
             401 -> "The bearer token was rejected even after re-reading ~/.mockkhttp/instances. Ask the user to " +
-                "restart the IDE, or check MockkHttp -> Settings -> Agent Control."
+                "restart the IDE, or check MockkHttp -> Settings -> AI Agent Access."
             403 -> "The control plane refused the caller (loopback, browser lockout or read-only mode). " +
-                "Check MockkHttp -> Settings -> Agent Control at ${target.baseUrl}."
+                "Check MockkHttp -> Settings -> AI Agent Access at ${target.baseUrl}."
             404 -> "That route does not exist in this plugin build; the bridge jar and the plugin are out of step. " +
                 "Update MockkHttp and restart the IDE."
             else -> "Read the message above; if it is empty, the MockkHttp Logs tab in the IDE has the detail."

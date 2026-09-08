@@ -17,6 +17,8 @@
         <p>
             Capture, debug and mock HTTP/HTTPS traffic from Android and Flutter apps — including Flutter on iOS Simulators.
             Everything happens inside the app via lightweight interceptors: no proxy, no certificates, no root.
+            Since 1.8.0 the plugin ships an <strong>MCP server</strong>: Claude Code, or any MCP client, can read the captured
+            traffic, build mocks from real calls and drive the capture session — loopback only, credentials redacted, every call audited.
         </p>
 
         <h3>Supported Platforms:</h3>

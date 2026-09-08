@@ -19,6 +19,16 @@ dependencies:
   mockk_http: ^1.8.0
 ```
 
+## AI agents (MCP)
+
+The MockkHttp plugin 1.8.0 ships an MCP server. With `mockk_http` in your app, Claude Code or any
+MCP client can read what the app called, build a mock from a captured request, switch the session
+to Mockk mode, wait for the next matching request and ask why a rule did or did not fire — nothing
+to add in the app. In the IDE: **MockkHttp → Settings → AI Agent Access → Write .mcp.json into the
+project root**, then start `claude` in the project. Loopback only, credentials redacted unless you
+allow otherwise, every agent call listed in the Inspector. See the
+[plugin README](https://github.com/sergiydev09/MockkHttp#-ai-agent-access-claude-code--mcp).
+
 ## Usage
 
 ### Option 1: Global HttpOverrides (recommended)

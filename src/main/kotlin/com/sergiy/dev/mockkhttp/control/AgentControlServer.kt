@@ -205,7 +205,7 @@ class AgentControlServer : Disposable {
     fun start(): ControlBinding? {
         if (disposed) return null
         if (auth.getAgentControl() == AGENT_CONTROL_OFF) {
-            lastBindError = "Agent control is off (MockkHttp → Settings → Agent Control)."
+            lastBindError = "Agent control is off (MockkHttp → Settings → AI Agent Access)."
             return null
         }
         binding()?.let { return it }

@@ -781,12 +781,12 @@ private val STATUS_DESCRIPTION = """
 
 private val FLOWS_DESCRIPTION = """
     Read what the app under test actually sent and received. This is the ground truth for "what did
-    the app call", "did it retry", "what did the server answer" — with one caveat: the native Android
-    interceptor (1.6.1) drops an identical request repeated within 500 ms unless the app sets
-    MockkHttpInterceptor.enableDeduplication = false, so a fast retry from an Android app may never
-    reach MockkHttp. mockk_http 1.8.0 on Flutter captures every request the app makes, and says so:
-    the answer's `client.stats` carries the library's own counters (flows_sent, passes_yielded, …),
-    so "one request, one flow" can be checked from outside.
+    the app call", "did it retry", "what did the server answer". The 1.8.0 clients — mockk_http on
+    Flutter, the 1.8.0 Gradle plugin on Android — capture every request the app makes and say so: the
+    answer's `client.stats` carries the library's own counters (flows_sent, passes_yielded, …), so
+    "one request, one flow" can be checked from outside. One caveat for an app still on the 1.6.1
+    Gradle plugin: that interceptor drops an identical request repeated within 500 ms unless the app
+    sets MockkHttpInterceptor.enableDeduplication = false, so a fast retry may never reach MockkHttp.
 
     action "list" (default) returns summaries newest first — method, URL, status, duration, byte
     counts, and resolution (whether a mock answered it or the real network did) — with no bodies, so
@@ -818,7 +818,7 @@ private val AWAIT_DESCRIPTION = """
 
     wait_ms is clamped to 25000 by the control plane. Pass since_seq from an earlier call so traffic
     that arrived before you started is not counted, and count:2 when you want to observe a retry
-    (native Android: see the 500 ms deduplication caveat in mockkhttp_flows).
+    (an app on the 1.6.1 Android Gradle plugin: see the deduplication caveat in mockkhttp_flows).
 """.trimIndent()
 
 private val MOCKS_DESCRIPTION = """

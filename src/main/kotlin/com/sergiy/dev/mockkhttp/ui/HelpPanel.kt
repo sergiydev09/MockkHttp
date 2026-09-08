@@ -35,11 +35,29 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
 
     companion object {
         // Versions shown in the setup snippets — keep in sync on releases (see VERSION_FILES.md)
-        private const val GRADLE_PLUGIN_VERSION = "1.6.1"
+        private const val GRADLE_PLUGIN_VERSION = "1.8.0"
         private const val FLUTTER_PACKAGE_VERSION = "1.8.0"
 
         private const val CARD_ANDROID = "android"
         private const val CARD_FLUTTER = "flutter"
+
+        private val MCP_HTML = """
+            <h2>4 · Let an AI agent drive it (optional)</h2>
+            <p>MockkHttp 1.8.0 ships an <strong>MCP server</strong>: Claude Code, or any MCP client, can read what
+            your app called, build a mock from a captured request, switch the mode, wait for the next request that
+            matches a pattern, and ask why a rule did or did not fire.</p>
+            <ol>
+                <li>Open <strong>Settings → AI Agent Access</strong> in this tool window and keep <strong>Full</strong>
+                    (or pick <strong>Read-only</strong>).</li>
+                <li>Click <strong>Write .mcp.json into the project root</strong>. The entry carries no port, token or
+                    project id, so it is safe to commit.</li>
+                <li>Start <code>claude</code> in the project directory. The bridge finds the running IDE by itself, on
+                    every call — an IDE restart needs no reconfiguration.</li>
+            </ol>
+            <p>Loopback only, a bearer token rotated on every IDE start, credentials redacted unless you allow
+            otherwise, and every agent call listed in the Inspector next to your app's traffic. Nothing to install:
+            the bridge ships inside the plugin and runs on the IDE's own Java.</p>
+        """.trimIndent()
 
         private val FOOTER_HTML = """
             <p style="margin-top: 16px;">
@@ -189,6 +207,8 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
             <strong>No flows?</strong> Rebuild with <code>./gradlew clean assembleDebug</code>,
             make sure the app uses OkHttp, and check the <strong>Logs</strong> tab.
         </div>
+
+        $MCP_HTML
         """.trimIndent()
     )
 
@@ -229,6 +249,8 @@ void main() {
             <strong>No flows?</strong> Launch order doesn't matter (the app retries every 15s), but make
             sure <code>MockkHttp.init()</code> runs before the first request and check the <strong>Logs</strong> tab.
         </div>
+
+        $MCP_HTML
         """.trimIndent()
     )
 }
