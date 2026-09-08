@@ -181,8 +181,11 @@ internal object AgentDocs {
             1. `GET /v1/projects/{pid}/status` — always first. It tells you the project, whether a
                capture session is running, the current mode, and what is blocking you. If no session
                is running, start one yourself with `POST /v1/projects/{pid}/session/start`, passing
-               package_name (and serial with several devices): nothing listens on port 9876 until the
-               session runs, so launch the app after starting it, not before.
+               package_name (and serial with several devices). Port 9876 is bound by a session, an app
+               scan or the open Inspector — check `interceptor.bound`: while it is false an app launched
+               now cannot announce itself, so pass package_name; while it is true the app announces
+               itself on startup, and start needs no argument when exactly one device has exactly one
+               announced app (otherwise pass package_name, and serial).
             2. Drive the app so it makes the call you care about.
             3. `GET /v1/projects/{pid}/flows?limit=25` — summaries only, so a chatty app cannot blow
                your context. Add `since_seq=<next_seq from the last call>` to read only what is new.
@@ -227,8 +230,8 @@ internal object AgentDocs {
             `"confirm_pause_all": true`, and there is no way for you to answer a paused request until
             milestone M3. Setting them from an agent will hang the app under test.
 
-            The mode can only be changed while a session is running; `SESSION_NOT_RUNNING` means a
-            human has not pressed Start yet.
+            The mode can only be changed while a session is running; `SESSION_NOT_RUNNING` means no
+            session is running — start one yourself with `POST /v1/projects/{pid}/session/start`.
         """.trimIndent(),
         relatedRoutes = listOf(
             "POST /v1/projects/{pid}/session/mode",
@@ -343,6 +346,13 @@ internal object AgentDocs {
             reported in `clamped`). A timeout is **not** an error — you get `satisfied: false` plus
             `closest_observed`, the traffic that nearly matched, which is normally enough to fix the
             matcher in one round trip. Use this instead of sleeping.
+
+            **Credentials in the URL.** A query parameter named like a credential (`appid`, `api_key`,
+            `token`, `signature`, …) is redacted on every surface that shows a URL — `<redacted:Nb>` in
+            `url`, named in `redacted_query`, or in `revealed_query` under `include_secrets` — and a rule
+            cloned with `from_flow_id` never keeps its value (required, match WILDCARD). Rules persist
+            under .idea/, which is often committed, and `mocks export` hands rules back verbatim: never
+            write a credential into a rule's query yourself.
 
             **`client`: the app's own numbers.** `status` and the listing both carry the last report the
             app's MockkHttp library sent with its messages: library, version, platform and counters —
@@ -493,8 +503,11 @@ internal object AgentDocs {
             5. another enabled rule on the same endpoint wins — re-enable yours with
                `exclusive: true`.
 
-            **"No flows at all."** `GET …/status`: `interceptor.bound` false means port 9876 is held by
-            another process; `session.running` false means nobody pressed Start; an empty
+            **"No flows at all."** `GET …/status`: `interceptor.bound` false with `bind_error` null means
+            nobody has bound port 9876 yet — a session, an app scan or the open Inspector binds it;
+            `bind_error` non-null means the last bind failed, and its message says why (most often
+            another process holds the port). `session.running` false means no session is running —
+            start one yourself; an empty
             `session.instrumented_packages` means no app has ever talked to this plugin — the app
             build is missing the interceptor, or it is not reaching the host.
 
@@ -515,8 +528,8 @@ internal object AgentDocs {
             **`SESSION_NOT_RUNNING`.** Nothing is captured and no mock answers until a session runs.
             Start one yourself with `POST /v1/projects/{pid}/session/start`, which needs no arguments
             when exactly one device has exactly one app that has announced itself — and pass
-            package_name from a cold start, because nothing listens on port 9876 until the session
-            runs. Ambiguity comes back as AMBIGUOUS_DEVICE or
+            package_name while `interceptor.bound` is false, because an app launched before port 9876
+            is bound cannot announce itself. Ambiguity comes back as AMBIGUOUS_DEVICE or
             AMBIGUOUS_APP listing the candidates.
         """.trimIndent(),
         relatedRoutes = listOf(

@@ -620,7 +620,11 @@ data class FlowSummary(
     @SerializedName("source_id") val sourceId: String?,
     @SerializedName("app_notified") val appNotified: Boolean?,
     @SerializedName("paused") val paused: Boolean,
-    @SerializedName("mock_rule_name") val mockRuleName: String?
+    @SerializedName("mock_rule_name") val mockRuleName: String?,
+    /** Query parameters in `url` whose value was replaced with `<redacted:Nb>` (a credential: an API key, a token). */
+    @SerializedName("redacted_query") val redactedQuery: List<String> = emptyList(),
+    /** Credential-bearing query parameters handed over IN CLEAR because `include_secrets` was set. */
+    @SerializedName("revealed_query") val revealedQuery: List<String> = emptyList()
 )
 
 /**
@@ -647,7 +651,11 @@ data class FlowMessageView(
      * credentials says so: these answers end up in test reports and logs, and an empty
      * `redacted_headers` alone could not be told apart from "there was nothing sensitive here".
      */
-    @SerializedName("revealed_headers") val revealedHeaders: List<String> = emptyList()
+    @SerializedName("revealed_headers") val revealedHeaders: List<String> = emptyList(),
+    /** Request half only: query parameters of the URL whose credential value was replaced with `<redacted:Nb>`. */
+    @SerializedName("redacted_query") val redactedQuery: List<String> = emptyList(),
+    /** Request half only: credential-bearing query parameters handed over IN CLEAR under `include_secrets`. */
+    @SerializedName("revealed_query") val revealedQuery: List<String> = emptyList()
 )
 
 /** `GET …/flows/{flowId}` — always includes both bodies, subject to `max_body_chars`. */

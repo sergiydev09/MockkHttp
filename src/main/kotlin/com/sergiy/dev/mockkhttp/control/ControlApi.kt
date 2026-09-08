@@ -146,6 +146,24 @@ class ControlApi {
         )
 
         /**
+         * Query parameters whose value is a credential. Redacted on every surface that shows a
+         * URL, under the same `include_secrets` gate as headers, and never baked into a rule
+         * cloned from a flow — rules persist under .idea/, which half the projects commit
+         * (audit round 16, BG: an OpenWeatherMap `appid` reached the repository's history).
+         */
+        val REDACTED_QUERY_KEYS: Set<String> = setOf(
+            "appid", "apikey", "apitoken", "xapikey", "key", "token", "accesstoken", "authtoken", "idtoken",
+            "refreshtoken", "bearer", "jwt", "auth", "authorization", "password", "passwd", "pass", "pwd",
+            "secret", "clientsecret", "credential", "credentials", "sig", "signature", "session", "sessionid",
+            // An OAuth authorization code is a single-use credential exchangeable for a token.
+            "code"
+        )
+
+        /** Whether a query parameter's name means its value is a credential: compared without case, `-` or `_`. */
+        fun isCredentialParam(name: String): Boolean =
+            name.lowercase().replace("-", "").replace("_", "") in REDACTED_QUERY_KEYS
+
+        /**
          * Query params whose captured value is worthless as a matcher: they change on every call, so
          * a rule cloned from a flow with `required:true` + `EXACT` matches exactly once and never again.
          */
@@ -346,7 +364,8 @@ class ControlApi {
             if (matching.size > page.size) {
                 warnings += "${matching.size - page.size} more flows match. Raise limit (max $MAX_FLOW_LIMIT) or page with since_seq."
             }
-            secretsWarning(bodies.orEmpty().flatMap { listOf(it.value.request, it.value.response) })
+            val summaries = page.map { summaryOf(it, secrets) }
+            secretsWarning(bodies.orEmpty().flatMap { listOf(it.value.request, it.value.response) }, summaries.flatMap { it.revealedQuery })
                 ?.let { warnings += it }
             retentionWarning(bodies)?.let { warnings += it }
 
@@ -355,7 +374,7 @@ class ControlApi {
                     nextSeq = index.nextSeq(),
                     returned = page.size,
                     totalMatching = matching.size,
-                    flows = page.map { summaryOf(it) },
+                    flows = summaries,
                     bodies = bodies,
                     client = clientInfoFor(project),
                     note = if (includeBody == INCLUDE_BODY_NONE) {
@@ -401,7 +420,7 @@ class ControlApi {
 
         ApiResult.ok(
             FlowDetail(
-                flow = summaryOf(entry),
+                flow = summaryOf(entry, secrets),
                 request = request,
                 response = response,
                 storedBodyTruncatedByRetention = retentionTruncated,
@@ -519,7 +538,8 @@ class ControlApi {
             warnings += "$leftBehind more flow(s) matched than count=$expected could return. next_seq points at the " +
                     "first of them: call again with since_seq:next_seq to read the rest, or raise count."
         }
-        secretsWarning(bodies.orEmpty().flatMap { listOf(it.value.request, it.value.response) })
+        val summaries = returned.map { summaryOf(it, secrets) }
+        secretsWarning(bodies.orEmpty().flatMap { listOf(it.value.request, it.value.response) }, summaries.flatMap { it.revealedQuery })
             ?.let { warnings += it }
         retentionWarning(bodies)?.let { warnings += it }
 
@@ -530,7 +550,7 @@ class ControlApi {
                 expected = expected,
                 waitedMs = waited,
                 nextSeq = nextSeq,
-                flows = returned.map { summaryOf(it) },
+                flows = summaries,
                 bodies = bodies,
                 closestObserved = closest,
                 hint = hint,
@@ -658,7 +678,28 @@ class ControlApi {
                 }
             }
             val loosen = request.loosenQuery ?: (sourceFlow != null)
-            val loosened = if (loosen) loosenQueryParams(structured.queryParams) else emptyList()
+            val heuristically = if (loosen) loosenQueryParams(structured.queryParams) else emptyList()
+            // A credential in a cloned flow's query — an API key, a token — must never be baked into
+            // the rule: rules persist under .idea/, which half the projects commit, and `mocks get`
+            // and `export` hand them back verbatim (audit round 16, BG). The parameter stays
+            // required so the rule still describes the request, with any value. A query the caller
+            // wrote explicitly is the caller's own words and is kept as written.
+            val credentials = mutableListOf<String>()
+            if (request.query == null && sourceFlow != null) {
+                for (param in structured.queryParams) {
+                    if (isCredentialParam(param.key) && param.value.isNotEmpty()) {
+                        param.value = ""
+                        param.required = true
+                        param.matchType = MatchType.WILDCARD
+                        credentials += param.key
+                    }
+                }
+                if (credentials.isNotEmpty()) {
+                    warnings += "${credentials.joinToString(", ")}: a credential travels in this query, so its value was " +
+                            "left out of the rule (required, match WILDCARD). The rule matches any value of it."
+                }
+            }
+            val loosened = (heuristically + credentials).distinct()
 
             // loosen_query asked for and nothing matched the heuristic. Silence here reads as
             // "done", and the rule then matches the one request it was cloned from and nothing
@@ -1520,10 +1561,10 @@ class ControlApi {
 
             CaptureSessionService.StartFailure.APP_NOT_CHOSEN -> ApiResult.fail(
                 ErrorCode.APP_NOT_CHOSEN, failed.message,
-                // Nothing listens on port 9876 until a session runs, so "launch the app and it will
-                // announce itself" is advice that cannot work from a cold start — the app's socket is
-                // refused and it stays silent. Only while the port is bound (a session ran before in
-                // this IDE) is launching the app a way out (audit round 15, BB).
+                // Port 9876 is bound by a session, an app scan or the open Inspector — not before. While
+                // it is not, "launch the app and it will announce itself" is advice that cannot work:
+                // the app's socket is refused and it stays silent. Only while the port is bound is
+                // launching the app a way out (audit round 15, BB; round 16, BF).
                 if (GlobalOkHttpInterceptorServer.getInstance().isBound()) {
                     "Retry with package_name:'com.example.app' (and serial:'…' with several devices), or launch " +
                             "the app under test: port 9876 is bound, so an instrumented build announces itself on " +
@@ -1531,10 +1572,10 @@ class ControlApi {
                             "reads the installed APKs instead (minutes)."
                 } else {
                     "Retry with package_name:'com.example.app' (and serial:'…' with several devices). Launching " +
-                            "the app first will not help yet: nothing listens on port 9876 until a session runs, so " +
-                            "an app started now cannot announce itself — start the session with the package name, " +
-                            "then launch the app. GET /v1/projects/$pid/devices?scan=true reads the installed APKs " +
-                            "instead (minutes)."
+                            "the app first will not help right now: port 9876 is not bound (status.interceptor.bound " +
+                            "is false), so an app started now cannot announce itself — start the session with the " +
+                            "package name, then launch the app. GET /v1/projects/$pid/devices?scan=true reads the " +
+                            "installed APKs instead (minutes)."
                 },
                 details = devices
             )
@@ -1830,7 +1871,8 @@ class ControlApi {
             val registration = registrationOf(project)
             builder.append(
                 when {
-                    registration == null -> "No capture session is running: press Start in the MockkHttp tool window."
+                    registration == null -> "No capture session is running: start one yourself with POST " +
+                            "/v1/projects/${project.locationHash}/session/start (package_name when the app has not announced itself)."
                     !GlobalOkHttpInterceptorServer.getInstance().isBound() ->
                         "The interceptor is not listening on port ${GlobalOkHttpInterceptorServer.SERVER_PORT}; check status."
                     registration.packageNameFilter != null ->
@@ -2047,14 +2089,15 @@ class ControlApi {
         else -> RESOLUTION_PASSTHROUGH
     }
 
-    private fun summaryOf(entry: SeqFlow): FlowSummary {
+    private fun summaryOf(entry: SeqFlow, revealSecrets: Boolean = false): FlowSummary {
         val flow = entry.flow
+        val query = redactQuery(flow.request.url, revealSecrets)
         return FlowSummary(
             flowId = flow.flowId,
             seq = entry.seq,
             ts = (flow.timestamp * 1000).toLong(),
             method = flow.request.method,
-            url = flow.request.url,
+            url = query.url,
             host = flow.request.host,
             path = flow.request.path,
             status = flow.response?.statusCode,
@@ -2067,12 +2110,14 @@ class ControlApi {
             // lands with the intercept registry. Never guessed.
             appNotified = null,
             paused = flow.paused,
-            mockRuleName = flow.mockRuleName
+            mockRuleName = flow.mockRuleName,
+            redactedQuery = query.redacted,
+            revealedQuery = query.revealed
         )
     }
 
     private fun requestView(flow: HttpFlowData, maxBodyChars: Int, revealSecrets: Boolean): FlowMessageView =
-        messageView(flow.request.headers, flow.request.content, maxBodyChars, revealSecrets)
+        messageView(flow.request.headers, flow.request.content, maxBodyChars, revealSecrets, redactQuery(flow.request.url, revealSecrets))
 
     private fun responseView(flow: HttpFlowData, maxBodyChars: Int, revealSecrets: Boolean): FlowMessageView? =
         flow.response?.let { messageView(it.headers, it.content, maxBodyChars, revealSecrets) }
@@ -2081,7 +2126,8 @@ class ControlApi {
         headers: Map<String, String>,
         content: String,
         maxBodyChars: Int,
-        revealSecrets: Boolean
+        revealSecrets: Boolean,
+        query: QueryRedaction? = null
     ): FlowMessageView {
         val redaction = redactHeaders(headers, revealSecrets)
         val safeHeaders = redaction.headers
@@ -2099,8 +2145,52 @@ class ControlApi {
             bodyTruncatedByRetention = truncatedByRetention,
             bodyBytes = content.toByteArray(Charsets.UTF_8).size,
             redactedHeaders = redaction.redacted,
-            revealedHeaders = redaction.revealed
+            revealedHeaders = redaction.revealed,
+            redactedQuery = query?.redacted.orEmpty(),
+            revealedQuery = query?.revealed.orEmpty()
         )
+    }
+
+    /** A URL with its credential-bearing query values replaced, and the record of which they were. */
+    private data class QueryRedaction(val url: String, val redacted: List<String>, val revealed: List<String>)
+
+    /**
+     * The query-string counterpart of [redactHeaders]: a parameter named in [REDACTED_QUERY_KEYS]
+     * has its value replaced with `<redacted:Nb>` unless secrets are being revealed, in which case
+     * it is named in `revealed`. The rest of the URL is handed back byte for byte.
+     */
+    private fun redactQuery(url: String, revealSecrets: Boolean): QueryRedaction {
+        val q = url.indexOf('?')
+        if (q < 0) return QueryRedaction(url, emptyList(), emptyList())
+        val end = url.indexOf('#', q).let { if (it < 0) url.length else it }
+        val query = url.substring(q + 1, end)
+        if (query.isEmpty()) return QueryRedaction(url, emptyList(), emptyList())
+        val sensitive = mutableListOf<String>()
+        // Pairs are separated by '&' — or by ';', which some servers and frameworks still accept;
+        // a credential behind a ';' must not hide inside the previous pair's value.
+        val rebuilt = StringBuilder()
+        var start = 0
+        while (true) {
+            var i = start
+            while (i < query.length && query[i] != '&' && query[i] != ';') i++
+            val pair = query.substring(start, i)
+            val eq = pair.indexOf('=')
+            val rawKey = if (eq < 0) pair else pair.substring(0, eq)
+            val key = try { java.net.URLDecoder.decode(rawKey, "UTF-8") } catch (_: Exception) { rawKey }
+            if (eq >= 0 && isCredentialParam(key)) {
+                sensitive += key.lowercase()
+                rebuilt.append(if (revealSecrets) pair else "$rawKey=<redacted:${pair.substring(eq + 1).toByteArray(Charsets.UTF_8).size}b>")
+            } else {
+                rebuilt.append(pair)
+            }
+            if (i >= query.length) break
+            rebuilt.append(query[i])
+            start = i + 1
+        }
+        if (sensitive.isEmpty()) return QueryRedaction(url, emptyList(), emptyList())
+        val names = sensitive.distinct()
+        return if (revealSecrets) QueryRedaction(url, emptyList(), names)
+        else QueryRedaction(url.substring(0, q + 1) + rebuilt + url.substring(end), names, emptyList())
     }
 
     /**
@@ -2203,10 +2293,14 @@ class ControlApi {
      * detail route, which is the one an agent reads once it knows which flow it wants, handed the
      * credential over in silence. A test per path guards each of the three now.
      */
-    private fun secretsWarning(views: List<FlowMessageView?>): String? {
-        val revealed = views.filterNotNull().flatMap { it.revealedHeaders }.distinct()
+    private fun secretsWarning(views: List<FlowMessageView?>, revealedQuery: List<String> = emptyList()): String? {
+        // The summaries carry the URL — and so a revealed credential — whatever include_body says;
+        // a warning fed only from the bodies stayed silent on a listing with the default include_body
+        // (adversarial review of audit round 16).
+        val revealed = (views.filterNotNull().flatMap { it.revealedHeaders + it.revealedQuery.map { q -> "query $q" } } +
+                revealedQuery.map { q -> "query $q" }).distinct()
         if (revealed.isEmpty()) return null
-        return "include_secrets was set: ${revealed.size} sensitive header(s) — ${revealed.joinToString(", ")} — " +
+        return "include_secrets was set: ${revealed.size} sensitive value(s) — ${revealed.joinToString(", ")} — " +
                 "are in this answer IN CLEAR, not redacted. Treat it as a credential: do not paste it into a " +
                 "report, a commit or a log. Omit include_secrets to get <redacted:Nb> placeholders instead."
     }
@@ -2361,15 +2455,23 @@ class ControlApi {
         name = rule.name,
         enabled = rule.enabled,
         method = rule.method,
-        url = rule.getDisplayUrl(),
+        url = redactQuery(rule.getDisplayUrl(), false).url,
         scheme = rule.scheme,
         host = rule.host,
         hostMatch = rule.hostMatch.name,
         port = rule.port,
         path = rule.path,
         pathMatch = rule.pathMatch.name,
+        // A rule written with a credential in an EXACT value (the caller's own words, or a rule
+        // from before 1.8.0) still shows it redacted here: mocks views have no include_secrets.
         query = rule.queryParams.map {
-            QueryParamDto(key = it.key, value = it.value, required = it.required, match = it.matchType.name)
+            val secret = isCredentialParam(it.key) && it.matchType == MatchType.EXACT && it.value.isNotEmpty()
+            QueryParamDto(
+                key = it.key,
+                value = if (secret) "<redacted:${it.value.toByteArray(Charsets.UTF_8).size}b>" else it.value,
+                required = it.required,
+                match = it.matchType.name
+            )
         },
         collectionId = rule.collectionId,
         collectionName = collection?.name,
@@ -2747,7 +2849,10 @@ class ControlApi {
 
             when (param.matchType) {
                 MatchType.EXACT -> if (param.value != actual) {
-                    return "query param '${param.key}' $optionalNote $MATCH_EXACT ('${param.value}' vs '$actual') — " +
+                    val secret = isCredentialParam(param.key)
+                    val expected = if (secret) "<redacted>" else param.value
+                    val got = if (secret) "<redacted>" else actual
+                    return "query param '${param.key}' $optionalNote $MATCH_EXACT ('$expected' vs '$got') — " +
                             "set match:'$MATCH_WILDCARD' to accept any value when it is present"
                 }
                 MatchType.WILDCARD -> Unit

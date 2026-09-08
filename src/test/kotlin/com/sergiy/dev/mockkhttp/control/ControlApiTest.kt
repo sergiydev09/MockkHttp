@@ -510,6 +510,65 @@ class ControlApiTest : BasePlatformTestCase() {
     // Explain
     // ========================================================================
 
+    fun `test a credential in the query is redacted like a header`() {
+        // Audit round 16, BG: an API key travelling as ?appid= came back in clear on every surface
+        // that shows a URL, and redacted_headers said nothing because it is not a header.
+        val flowId = addFlow(url = "https://api.example.com/v1/weather?appid=SECRET123&q=Madrid")
+        val listed = ok(api.listFlows(pid, FlowQuery())).flows.single { it.flowId == flowId }
+        assertFalse("the key must not be in the summary", listed.url.contains("SECRET123"))
+        assertTrue(listed.url.contains("appid=<redacted:9b>") && listed.url.contains("q=Madrid"))
+        assertEquals(listOf("appid"), listed.redactedQuery)
+        val detail = ok(api.getFlow(pid, flowId))
+        assertEquals(listOf("appid"), detail.request.redactedQuery)
+        assertFalse(detail.flow.url.contains("SECRET123"))
+
+        api.environment = api.environment.copy(revealSecrets = true)
+        val revealed = ok(api.getFlow(pid, flowId, includeSecrets = true))
+        assertTrue("revealed under the same gate as headers", revealed.flow.url.contains("appid=SECRET123"))
+        assertEquals(listOf("appid"), revealed.request.revealedQuery)
+        assertTrue("and named as revealed", revealed.warnings.any { it.contains("query appid") })
+
+        // Adversarial review: the listing and await reveal the URL in their summaries whatever
+        // include_body says, so the warning must come from the summaries too.
+        val listedInClear = ok(api.listFlows(pid, FlowQuery(includeSecrets = true)))
+        assertTrue(listedInClear.flows.single { it.flowId == flowId }.url.contains("SECRET123"))
+        assertTrue("a listing that reveals says so", listedInClear.warnings.any { it.contains("query appid") })
+        val awaited = ok(api.awaitFlow(pid, AwaitFlowRequest(count = 1, waitMs = 200, includeSecrets = true, sinceSeq = 0L)))
+        assertTrue("and so does await", awaited.warnings.any { it.contains("query appid") })
+        api.environment = api.environment.copy(revealSecrets = false)
+
+        // ';' as a pair separator, and spellings: hyphens, underscores, case, and an OAuth code.
+        val odd = addFlow(url = "https://api.example.com/cb?a=1;Access-Token=SECRET456&code=AUTHCODE&plain=x")
+        val oddListed = ok(api.listFlows(pid, FlowQuery())).flows.single { it.flowId == odd }
+        assertFalse(oddListed.url.contains("SECRET456") || oddListed.url.contains("AUTHCODE"))
+        assertTrue(oddListed.url.contains("a=1;Access-Token=<redacted:9b>&code=<redacted:8b>&plain=x"))
+        assertEquals(listOf("access-token", "code"), oddListed.redactedQuery)
+    }
+
+    fun `test a rule cloned from a flow never keeps a credential`() {
+        // Audit round 16, BG: from_flow_id copied the key into the rule as a required EXACT value,
+        // and rules persist under .idea/, which the test bench had committed.
+        val flowId = addFlow(url = "https://api.example.com/v1/weather?appid=SECRET123&q=Madrid")
+        val collection = ok(api.createCollection(pid, CollectionCreateRequest(name = "credential")))
+        val created = ok(api.createRule(pid, RuleCreateRequest(fromFlowId = flowId, collectionId = collection.collectionId)))
+        val appid = created.rule.query.single { it.key == "appid" }
+        assertEquals("WILDCARD", appid.match)
+        assertEquals("the value is not stored", "", appid.value)
+        assertEquals(true, appid.required)
+        assertTrue(created.loosenedParams.contains("appid"))
+        assertTrue(created.warnings.any { it.contains("credential") })
+        assertFalse(created.rule.url.contains("SECRET123"))
+
+        // A rule written with the value by hand is the caller's own words and is stored — but the
+        // views still redact it, and so does match_explain.
+        val explicit = createRule(collection.collectionId, url = "https://api.example.com/v1/other?token=SECRET456")
+        assertEquals("<redacted:9b>", explicit.rule.query.single { it.key == "token" }.value)
+        assertFalse(explicit.rule.url.contains("SECRET456"))
+        val explained = ok(api.explainMatch(pid, MatchExplainRequest(method = "GET", url = "https://api.example.com/v1/other?token=OTHER")))
+        val reason = explained.candidates.single { it.id == explicit.rule.ruleId }.rejectedBecause!!
+        assertTrue(reason, reason.contains("<redacted>") && !reason.contains("SECRET456") && !reason.contains("OTHER"))
+    }
+
     fun testExplainNamesTheWinnerAndWhyEveryOtherRuleWasRejected() {
         val collection = ok(api.createCollection(pid, CollectionCreateRequest(name = "explain")))
         val winnerId = createRule(collection.collectionId, url = "https://api.example.com/v1/users").rule.ruleId
