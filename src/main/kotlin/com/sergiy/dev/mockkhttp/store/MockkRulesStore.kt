@@ -8,7 +8,9 @@ import com.intellij.openapi.components.Storage
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
+import com.sergiy.dev.mockkhttp.model.HttpStatus
 import com.sergiy.dev.mockkhttp.model.MatchType
+import com.sergiy.dev.mockkhttp.model.MockBody
 import com.sergiy.dev.mockkhttp.model.MockkCollection
 import com.sergiy.dev.mockkhttp.model.MockkCollectionData
 import com.sergiy.dev.mockkhttp.model.MockkCollectionExport
@@ -107,6 +109,7 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
             // matchers disagree in the first place.
             migrateOldRulesToDefaultCollection()
             recoverOrphanedRules()
+            migrateLegacyOptionalParams()
 
             collections.size to rules.size
         }
@@ -201,6 +204,73 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         logger.warn("⚠️ Recovered ${orphaned.size} orphaned rule(s) into '${defaultCollection.name}' (left disabled)")
     }
 
+    /**
+     * Keeps rules written by an older build matching exactly what they matched before.
+     *
+     * `required:false` used to mean "never look at this parameter", so the only ways to produce
+     * `required:false` + `EXACT` were the Mockk tab's Required checkbox and the control plane's
+     * `loosen_query` — in both cases meaning "ignore the value". Now that an optional parameter IS
+     * compared when present, that same pair would suddenly reject the very requests it was written
+     * to let through (a cache-busting `ts` never repeats). WILDCARD is the mode that spells out the
+     * old intent, and it leaves the matching behaviour of these rules bit-for-bit unchanged.
+     *
+     * REGEX and WILDCARD are deliberately left alone: an optional REGEX that is now actually applied
+     * is the fix, not a regression.
+     */
+    private fun migrateLegacyOptionalParams() {
+        var converted = 0
+        val affectedRules = mutableSetOf<String>()
+
+        rules.forEach { rule ->
+            val changed = normalizeLegacyOptionalParams(rule.queryParams)
+            if (changed > 0) {
+                converted += changed
+                affectedRules += rule.name
+            }
+        }
+
+        if (converted > 0) {
+            logger.warn(
+                "⚠️ Converted $converted optional query param(s) to WILDCARD so they keep ignoring the " +
+                        "captured value: ${affectedRules.joinToString(", ")}. An optional param is now compared " +
+                        "when it IS present."
+            )
+        }
+    }
+
+    /** The one conversion behind [migrateLegacyOptionalParams]; returns how many params it rewrote. */
+    private fun normalizeLegacyOptionalParams(params: MutableList<QueryParam>): Int {
+        var converted = 0
+        params.forEach { param ->
+            if (!param.required && param.matchType == MatchType.EXACT) {
+                param.matchType = MatchType.WILDCARD
+                converted++
+            }
+        }
+        return converted
+    }
+
+    /**
+     * Same conversion, applied to a document that just came out of a file.
+     *
+     * It has to happen BEFORE the endpoint signatures are computed, not inside [MockkRuleData.toRule]:
+     * a signature built from the raw `required:false` + EXACT would no longer equal the signature of
+     * the rule already in the store (converted on load), so re-importing the very file the user
+     * exported last week would add every rule a second time instead of recognising it.
+     */
+    private fun normalizeImportedRules(export: MockkCollectionExport) {
+        var converted = 0
+        export.collections.forEach { data ->
+            data.rules.forEach { rule -> converted += normalizeLegacyOptionalParams(rule.queryParams) }
+        }
+        if (converted > 0) {
+            logger.info(
+                "🔄 Import: $converted optional query param(s) set to WILDCARD so they keep ignoring the " +
+                        "value they were exported with"
+            )
+        }
+    }
+
     private fun findOrCreateDefaultCollection(): MockkCollection {
         return collections.values.find { it.name == "Default" }
             ?: MockkCollection(
@@ -246,6 +316,7 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
 
         stateLock.write { rules.add(rule) }
         logger.info("➕ Added mock rule: $name to collection: $collectionId")
+        warnAboutStoredResponse(rule)
 
         notifyRuleListeners(ruleAddedListeners, rule)
         return rule
@@ -301,8 +372,35 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         }
 
         logger.info("🔄 Updated mock rule: ${updated.name}")
+        warnAboutStoredResponse(updated)
         notifyRuleListeners(ruleUpdatedListeners, updated)
         return updated
+    }
+
+    /**
+     * Say out loud what a stored response will do to the app.
+     *
+     * Neither problem can be repaired here — the rule already exists — but both are silent failures
+     * at the far end, hours later and nowhere near the call that caused them: an out-of-range status
+     * blows up inside the app when it is finally served, and a body carrying U+FFFD is a payload
+     * that was already destroyed before it reached the store, so what the app receives is not the
+     * bytes anybody asked for. The control plane refuses both at the door; this is the last place
+     * that can still name them, and the Logs tab is where the user will look.
+     */
+    private fun warnAboutStoredResponse(rule: MockkRule) {
+        if (!HttpStatus.isValid(rule.statusCode)) {
+            logger.warn(
+                "⚠️ Rule '${rule.name}' stores status ${rule.statusCode}, outside " +
+                        "${HttpStatus.VALID_RANGE.first}..${HttpStatus.VALID_RANGE.last}: the app will fail when " +
+                        "this rule is served, not now"
+            )
+        }
+        if (MockBody.looksLossy(rule.content)) {
+            logger.warn(
+                "⚠️ Rule '${rule.name}' has U+FFFD replacement characters in its body: it came from bytes that " +
+                        "are not UTF-8 text, so the app will receive different bytes than the original payload"
+            )
+        }
     }
 
     // ========== COLLECTION METHODS ==========
@@ -594,14 +692,19 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         }
 
         // 3. Match query params
+        //
+        // `required` decides only what happens when the parameter is ABSENT. A parameter that IS
+        // present is always compared with its match type — `required:false` used to skip the check
+        // entirely, so a REGEX value was never applied and the rule quietly matched anything. It
+        // also made this matcher disagree with the flow matcher behind await_flow, which has always
+        // read the two fields separately. Use WILDCARD to accept any value.
         for (ruleParam in rule.queryParams) {
-            if (!ruleParam.required) {
-                logger.debug("   ⏭️  Param '${ruleParam.key}' skipped (not required)")
-                continue
-            }
-
             val actualValue = queryParams[ruleParam.key]
             if (actualValue == null) {
+                if (!ruleParam.required) {
+                    logger.debug("   ⏭️  Optional param '${ruleParam.key}' absent - allowed")
+                    continue
+                }
                 logger.debug("   ❌ Required param '${ruleParam.key}' not found in request")
                 return false
             }
@@ -820,6 +923,7 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         try {
             val gson = com.google.gson.Gson()
             val exportData = gson.fromJson(json, MockkCollectionExport::class.java)
+            normalizeImportedRules(exportData)
 
             logger.info("📥 Importing ${exportData.collections.size} collection(s) from JSON")
             logger.info("   Plugin version: ${exportData.pluginVersion}")
@@ -964,6 +1068,7 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
     fun analyzeImport(json: String): ImportAnalysis {
         val gson = com.google.gson.Gson()
         val exportData = gson.fromJson(json, MockkCollectionExport::class.java)
+        normalizeImportedRules(exportData)
 
         // One snapshot for the whole diff, so every collection is compared against the same store.
         val (collectionsSnapshot, rulesSnapshot) = stateLock.read {
@@ -1110,6 +1215,15 @@ class MockkRulesStore(project: Project) : PersistentStateComponent<MockkRulesSto
         var headers: Map<String, String> = emptyMap(),
         var content: String = ""
     ) {
+        /**
+         * How many bytes this rule's body really is.
+         *
+         * The store holds characters and the socket carries UTF-8, so a `body_bytes` taken from
+         * `content.length` is a different number from what the app receives. Measured here so every
+         * reader gets the same answer.
+         */
+        fun contentBytes(): Int = MockBody.utf8Length(content)
+
         /**
          * Gets the full URL (for display purposes)
          */

@@ -16,7 +16,7 @@ Flutter package for the [MockkHttp IntelliJ/Android Studio plugin](https://githu
 
 ```yaml
 dependencies:
-  mockk_http: ^1.7.1
+  mockk_http: ^1.8.0
 ```
 
 ## Usage
@@ -42,7 +42,7 @@ For apps using [dio](https://pub.dev/packages/dio) as their HTTP library.
 import 'package:mockk_http/mockk_http.dart';
 
 final dio = Dio();
-dio.interceptors.add(MockkHttpDioInterceptor());
+dio.interceptors.add(MockkHttpDioInterceptor(dio: dio));
 ```
 
 ### Debug-only initialization
@@ -89,13 +89,63 @@ MockkHttp.init(host: '127.0.0.1');
 
 No proxy configuration, certificate installation, or root access is needed.
 
-## Request deduplication
+## One request, one flow
 
-Apps with multiple HTTP clients may produce duplicate captures. MockkHttp deduplicates by default (500ms window). Disable it for debugging:
+A `dio` interceptor sits on top of the global `HttpOverrides` (dio's default adapter builds its
+`HttpClient` through `HttpOverrides.global`), so with both installed the same request goes past
+both. Give the interceptor its `Dio` — `MockkHttpDioInterceptor(dio: dio)` — and it wraps the
+Dio's adapter to tell the layer underneath which request it has already captured, through a Dart
+zone: the request itself, URL, headers and body, goes down exactly as your app wrote it. Two
+genuine requests to the same URL — a retry, two screens loading the same data — are two flows;
+nothing is dropped on a timer. Without the `dio:` argument the interceptor stands back whenever the
+global override is active, so nothing is reported twice either; pass it when you use an adapter
+that bypasses `dart:io` (native adapters), because then this interceptor is the only layer that
+can see the request. Switch the coordination off if you want every layer to report everything it
+sees:
 
 ```dart
 MockkHttp.enableDeduplication = false;
 ```
+
+Configure `dio.httpClientAdapter` (pinning, a proxy, timeouts) **before** sending traffic. The
+interceptor puts its wrapper back at the start of every request, so an adapter set up earlier —
+or set again on every request by an interceptor of your own — is never a problem. An adapter
+swapped while a request is in flight cannot be told to step aside, and that one request is
+reported twice. The report counts it in `claims_not_carried` only when it actually happened, on
+two witnesses: that Dio's adapter was replaced while the request was in flight, and the
+`dart:io` layer saw that very request (same method and URL, after the claim was made) go past
+without its claim — and a debug print says so once, when that request ends. When the adapter
+was replaced but nothing beneath matched, the package does not know whether the request was
+answered above the adapter, sent through one that bypasses `dart:io`, or fetched under a URL the
+new adapter rewrote (a signing or discovery adapter) and reported twice all the same: that is
+`claims_unresolved`, said once, never passed off as "nobody saw it". A request your mock answers
+never goes down and makes no claim; one whose Dio kept its adapter and that never reached it —
+answered or cancelled by a later interceptor — is `claims_not_fetched`. `wrapper_replaced`
+counts the replacements themselves, which are harmless on their own.
+
+Two limits of that bookkeeping, so you can read the counters honestly. The witness beneath is
+matched by identity, so a request from another stack (`package:http`, a bare `HttpClient`) to
+the *same* method and URL, while a dio claim to it is alive and that Dio's adapter has been
+replaced, answers for it: `claims_not_carried` counts one too many and the debug print names an
+adapter you did configure in time — that takes an in-flight swap, a claim that never reached
+`dart:io` (answered above, or a native adapter), and an unrelated identical request in the same
+window, and it is not pursued. And the `dart:io` layer remembers unclaimed passes only while a
+dio claim to that same method and URL is alive, in a bounded list: `beneath_witness_evicted`
+counts what that list had to drop, and while it is not zero a lost claim could have gone
+unwitnessed.
+
+One thing `dio` itself hides. A request interceptor placed *after* `MockkHttpDioInterceptor`
+that answers a request with `handler.resolve(response)` — a cache, with the flag at its default
+— runs no response interceptor at all, so MockkHttp never sees that request end: it produces no
+flow, and its claim stays alive, which `claims_pending` shows (a number that stays put with
+nothing in flight is exactly this). Put such an interceptor *before* MockkHttp's, so a cache hit
+is simply not traffic, or resolve with `callFollowingResponseInterceptor: true` and the request
+is reported like any other.
+
+Every message the package sends carries a `client` report — library, version, platform and its
+counters (flows sent by layer, claims made, passes yielded, claims withdrawn, times the dio
+interceptor stood back) — which the plugin shows under `client` on `status` and on the flow
+listing. That is how "one request, one flow" is checked from outside rather than trusted.
 
 ## License
 

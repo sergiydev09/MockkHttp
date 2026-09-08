@@ -91,7 +91,8 @@ void main() {
 
       final client = MockkHttpPluginClient(port: server.port);
       final check = await client.checkForMock(
-        const RequestData(method: 'GET', url: 'https://api.example.com/x', headers: {}),
+        const RequestData(
+            method: 'GET', url: 'https://api.example.com/x', headers: {}),
       );
 
       expect(check, isNotNull);

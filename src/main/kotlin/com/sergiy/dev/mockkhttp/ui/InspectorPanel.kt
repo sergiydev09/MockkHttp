@@ -1,11 +1,14 @@
 package com.sergiy.dev.mockkhttp.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
@@ -15,7 +18,9 @@ import com.intellij.util.ui.JBUI
 import com.sergiy.dev.mockkhttp.adb.*
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
 import com.sergiy.dev.mockkhttp.model.HttpFlowData
+import com.sergiy.dev.mockkhttp.proxy.GlobalOkHttpInterceptorServer
 import com.sergiy.dev.mockkhttp.proxy.OkHttpInterceptorServer
+import com.sergiy.dev.mockkhttp.session.CaptureSessionService
 import com.sergiy.dev.mockkhttp.store.FlowStore
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -54,11 +59,41 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val flowList: JBList<HttpFlowData>
     private val allFlows = mutableListOf<HttpFlowData>() // Keep all flows for filtering
 
+    // Host for the agent-activity strip, between the flow list and the actions row. An empty
+    // BorderLayout panel has a preferred size of 0x0, so the Inspector is unaffected if the strip
+    // cannot be installed at all.
+    private val agentActivityHolder = JPanel(BorderLayout())
+
+    // The strip itself, once installed. Null only when the tool window was not registered yet or
+    // the installation failed - the agent channel is optional and must never break the Inspector.
+    private var agentActivityView: AgentActivityView? = null
+
     // State
     private var selectedEmulator: EmulatorInfo? = null
     private var selectedApp: AppInfo? = null
     private var currentMode: Mode = Mode.STOPPED
     private var searchQuery: String = ""
+
+    // The mode this panel last ASKED for, still in flight. An agent and the Inspector now write
+    // the same session, so a difference between the registration and currentMode is ambiguous:
+    // without this, our own Start/Stop would be reported to the user as the agent's doing during
+    // the window between the background task registering and its EDT callback landing.
+    private var lastLocalIntent: Mode? = null
+
+    // When an agent last changed the capture mode, or 0 once the human takes the wheel again.
+    // Kept until then rather than expiring on a timer: "an agent put you in MOCKK" is just as
+    // true ten minutes later, and that is exactly when it is most surprising.
+    private var agentModeChangeAtMs: Long = 0L
+
+    // Set while the reconcile loop moves the radios to match the session. setSelected() fires no
+    // ActionEvent, so this is belt-and-braces - but it makes that a local guarantee instead of a
+    // piece of Swing trivia the next reader has to know.
+    private var isSyncingModeControls = false
+
+    // Packages listed in the App selector that the device scan did NOT find - they are there
+    // because the app announced itself over the wire. EDT-only; read by the combo renderer, which
+    // marks them so the user can see where the knowledge came from.
+    private val announcedOnlyPackages: MutableSet<String> = HashSet()
 
     // Serials whose app scan is in flight. A single-slot guard let A -> B -> A queue a second
     // concurrent scan of A, doubling the adb connections the USB dispatcher caps at 3.
@@ -125,7 +160,15 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private companion object {
+        /** Must match the `id` of the toolWindow extension in plugin.xml. */
+        const val TOOL_WINDOW_ID = "MockkHttp"
+
         const val DEVICE_CHANGE_DEBOUNCE_MS = 1500
+
+        // How often the Inspector re-reads the interceptor registration. One second is fast enough
+        // that a mode an agent changed never looks stale, and the read itself is one volatile map
+        // lookup - there is no ADB, no socket and no allocation of consequence behind it.
+        const val SESSION_SYNC_INTERVAL_MS = 1000
 
         // Cap on how long a burst may defer the refresh. Without it, a device flapping faster
         // than the debounce interval starves the timer and the list never refreshes at all -
@@ -196,9 +239,24 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 ): java.awt.Component {
                     super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
                     if (value is AppInfo) {
-                        // With "Show all apps" the list mixes detected and undetected packages;
-                        // without a marker they are indistinguishable rows.
-                        text = if (value.hasMockkHttp) "🎭 ${value.packageName}" else value.packageName
+                        // Three provenances, three marks. With "Show all apps" the list mixes
+                        // detected and undetected packages, and the announced ones did not come
+                        // from this device's scan at all - without a marker they would all be
+                        // indistinguishable rows.
+                        val announced = value.packageName in announcedOnlyPackages
+                        text = when {
+                            announced -> "📡 ${value.packageName}"
+                            value.hasMockkHttp -> "🎭 ${value.packageName}"
+                            else -> value.packageName
+                        }
+                        // Reset explicitly: a cell renderer is one reused component, so a tooltip
+                        // left over from the previous row would follow the cursor down the list.
+                        toolTipText = if (announced) {
+                            "This app introduced itself to MockkHttp over the wire, so it certainly " +
+                                    "speaks the protocol. The app scan on this device did not list it."
+                        } else {
+                            null
+                        }
                         if (!value.hasMockkHttp && !isSelected) foreground = JBColor.GRAY
                     }
                     return this
@@ -390,6 +448,12 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
         }
 
+        // Both deferred to a later EDT pass: the tool window is still being built right now, and
+        // initializeAdb() blocks the EDT for as long as ADB takes to come up.
+        SwingUtilities.invokeLater {
+            installAgentActivityView()
+        }
+
         // Initialize ADB
         SwingUtilities.invokeLater {
             initializeAdb()
@@ -492,10 +556,280 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
             add(statusLabel, BorderLayout.CENTER)
         }
 
+        // The agent-activity strip sits between the flow list and the actions row: expanding it
+        // reads as a continuation of the list it explains, and Clear/Export/status stay anchored
+        // at the very bottom where the eye expects them instead of jumping a row.
+        val southPanel = JPanel(BorderLayout()).apply {
+            add(agentActivityHolder, BorderLayout.NORTH)
+            add(bottomPanel, BorderLayout.CENTER)
+        }
+
         // Main layout
         add(topPanel, BorderLayout.NORTH)
         add(flowPanel, BorderLayout.CENTER)
-        add(bottomPanel, BorderLayout.SOUTH)
+        add(southPanel, BorderLayout.SOUTH)
+    }
+
+    /**
+     * Put the agent-activity strip on screen.
+     *
+     * Deferred to a later EDT pass on purpose. The strip must be parented to the *tool window's*
+     * Disposable - it owns a repeating Swing Timer and a listener in an app-level service, and
+     * parenting either to the project keeps them alive on a classloader a dynamic plugin unload
+     * can then never collect. This panel is built from inside `createToolWindowContent`, so it
+     * asks for that Disposable once the tool window is unquestionably registered rather than
+     * racing its own construction.
+     *
+     * A failure here is deliberately not fatal: the agent channel is optional, and a user who
+     * never asked for one must still get a working Inspector.
+     */
+    private fun installAgentActivityView() {
+        if (project.isDisposed) return
+        try {
+            val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID)
+            if (toolWindow == null) {
+                logger.debug("Tool window $TOOL_WINDOW_ID is not registered; agent activity strip not installed")
+                return
+            }
+            val view = AgentActivityView(toolWindow.disposable)
+            agentActivityView = view
+            agentActivityHolder.add(view, BorderLayout.CENTER)
+            agentActivityHolder.revalidate()
+            startSessionSync(toolWindow.disposable)
+        } catch (e: Exception) {
+            logger.warn("⚠️ Agent activity strip could not be installed; the Inspector is unaffected", e)
+        }
+    }
+
+    /**
+     * Watch the capture session, so the Inspector shows what an agent did to it.
+     *
+     * Two mechanisms, on purpose:
+     *
+     * - **The listener** is the fast path. Every agent-driven change (start, stop, mode, package
+     *   filter) goes through [CaptureSessionService], which fires it on the thread that made the
+     *   change — a control-plane worker — so this must hop to the EDT. One `invokeLater` per event
+     *   is safe here in a way it is not for the audit ring: a session change is a human-scale
+     *   action, not something that happens per intercepted request.
+     * - **The timer** is the backstop. The Inspector's own Start/Stop still calls
+     *   `OkHttpInterceptorServer` directly and fires nothing (that is `SessionOrigin.UNKNOWN`), and
+     *   nothing at all is fired when an app announces itself — which is what keeps the App selector
+     *   honest. One volatile map read a second buys both.
+     *
+     * Both are parented to the tool window for the same reason [AgentActivityView] is: a repeating
+     * `javax.swing.Timer` lives in an application-wide TimerQueue, so one that nobody stops keeps
+     * ticking on a classloader a dynamic plugin unload can then never collect. The project's
+     * Disposable would outlive that unload; the tool window's does not.
+     */
+    private fun startSessionSync(parentDisposable: Disposable) {
+        val timer = Timer(SESSION_SYNC_INTERVAL_MS) { syncFromCaptureSession() }.apply { isRepeats = true }
+        try {
+            Disposer.register(parentDisposable, Disposable { timer.stop() })
+        } catch (e: Exception) {
+            // Already-disposed parent: better no reconciliation than a timer nothing can stop.
+            logger.warn("⚠️ Session sync could not be registered for disposal; it stays off", e)
+            return
+        }
+        timer.start()
+
+        // The listener only makes the timer faster, so its failure costs a second of latency and
+        // nothing else - it must not take the backstop down with it.
+        try {
+            CaptureSessionService.getInstance(project).addStateListener(parentDisposable) {
+                SwingUtilities.invokeLater { syncFromCaptureSession() }
+            }
+        } catch (e: Exception) {
+            logger.warn("⚠️ Session state listener could not be installed; falling back to polling", e)
+        }
+
+        // Don't make the first paint wait a second - an agent may already own the session.
+        syncFromCaptureSession()
+    }
+
+    /**
+     * Re-read who the capture session belongs to, and make the UI say so.
+     *
+     * The Inspector used to be the only writer of session state, and its controls assumed it. An
+     * agent now starts, stops and re-modes the same session through [CaptureSessionService], whose
+     * `state()` reads the live interceptor registration — the very thing the data plane answers
+     * `CHECK_MOCK` from, and the same source `ControlApi` reports on `/v1/.../session`. Reading it
+     * here is what keeps the tool window, the control plane and the app from telling three
+     * different stories.
+     *
+     * Runs whether or not the tab is on screen: the controls must already be right when the user
+     * looks, not a second afterwards.
+     */
+    private fun syncFromCaptureSession() {
+        if (project.isDisposed) return
+
+        val state = try {
+            CaptureSessionService.getInstance(project).state()
+        } catch (e: Exception) {
+            // Reading a service that is going away during shutdown must not kill the timer.
+            logger.debug("Could not read the capture session state: ${e.message}")
+            return
+        }
+
+        reconcileSessionMode(state)
+        // While stopped, targetPackage is the app the next start would use - an agent may have
+        // chosen one this device's scan never listed.
+        syncKnownPackagesIntoSelector(state.packageFilter ?: state.targetPackage)
+
+        agentActivityView?.setSessionState(
+            AgentActivityView.SessionState(
+                running = state.running,
+                mode = state.mode?.name,
+                packageFilter = state.packageFilter,
+                // The device the session actually targets when the service knows it; ours is the
+                // best available answer for a session the Inspector started itself.
+                deviceLabel = (state.device ?: selectedEmulator)?.displayName,
+                startedByAgent = state.startedBy == CaptureSessionService.SessionOrigin.AGENT,
+                agentChangedAtMs = agentModeChangeAtMs
+            )
+        )
+    }
+
+    /** Adopt a mode this panel did not set, so an agent's switch is visible the second it lands. */
+    private fun reconcileSessionMode(state: CaptureSessionService.SessionState) {
+        val observed = when (state.mode.takeIf { state.running }) {
+            OkHttpInterceptorServer.Mode.RECORDING -> Mode.RECORDING
+            OkHttpInterceptorServer.Mode.DEBUG -> Mode.DEBUG
+            OkHttpInterceptorServer.Mode.MOCKK -> Mode.MOCKK
+            OkHttpInterceptorServer.Mode.MOCKK_DEBUG -> Mode.MOCKK_DEBUG
+            null -> Mode.STOPPED
+        }
+
+        if (observed == currentMode) {
+            lastLocalIntent = null
+            return
+        }
+
+        // Our own Start/Stop/mode change lands here a moment before its EDT callback runs. Adopting
+        // it is right either way; calling it the agent's doing would not be.
+        val ours = observed == lastLocalIntent
+        if (ours) {
+            lastLocalIntent = null
+        } else {
+            agentModeChangeAtMs = System.currentTimeMillis()
+            logger.info("🤖 Capture session changed outside the Inspector: ${currentMode.name} → ${observed.name}")
+        }
+        applyObservedMode(observed)
+    }
+
+    /** Move the controls and the status line onto [mode] without pretending the user did it. */
+    private fun applyObservedMode(mode: Mode) {
+        currentMode = mode
+        isSyncingModeControls = true
+        try {
+            when (mode) {
+                Mode.RECORDING, Mode.DEBUG -> recordingRadio.isSelected = true
+                Mode.MOCKK, Mode.MOCKK_DEBUG -> mockkRadio.isSelected = true
+                // Leave the radios where they are: they are the mode the next Start will use, and
+                // stopping a session is not the user changing their mind about that.
+                Mode.STOPPED -> Unit
+            }
+            if (mode != Mode.STOPPED) {
+                debugCheckbox.isSelected = mode == Mode.DEBUG || mode == Mode.MOCKK_DEBUG
+            }
+        } finally {
+            isSyncingModeControls = false
+        }
+        updateStatus(statusTextFor(mode), statusColorFor(mode))
+        updateButtonStates()
+    }
+
+    /**
+     * Put packages the plugin has PROVEN it can talk to into the App selector.
+     *
+     * An app that has PINGed the interceptor speaks the protocol — a stronger signal than any APK
+     * scan, which can miss a release build, run out of pull budget, be cancelled, be throttled, or
+     * simply have run before the app was ever launched. The screenshot bug is exactly that last
+     * case: `instrumented_packages` was populated and the selector was still empty, because the
+     * announcement was only ever used for a warning on physical devices.
+     *
+     * This adds to the list, never rescans: the device throttling, cancellation and cooldown logic
+     * in [refreshApps] is untouched, and no ADB command is issued from here.
+     */
+    private fun syncKnownPackagesIntoSelector(sessionFilter: String?) {
+        // No device, no app list. Start needs a device anyway, and offering apps under an empty
+        // device selector would be a puzzle rather than a shortcut.
+        if (selectedEmulator == null) return
+
+        val known = LinkedHashSet<String>()
+        known += GlobalOkHttpInterceptorServer.getInstance().getKnownMockkHttpPackages()
+        // A running session's own filter belongs in the list too - an agent may have started the
+        // capture (M4) on an app this device's scan never listed, and the user must still see it.
+        sessionFilter?.let { known += it }
+        if (known.isEmpty()) return
+
+        val listed = HashSet<String>()
+        for (index in 0 until appComboBox.itemCount) {
+            appComboBox.getItemAt(index)?.packageName?.let { listed += it }
+        }
+        val missing = known.filterNot { it in listed }
+        if (missing.isEmpty()) return
+
+        val hadSelection = appComboBox.selectedItem != null
+        var toSelect: AppInfo? = null
+        var selectionRank = 0
+        isRebuildingAppCombo = true
+        try {
+            for (packageName in missing) {
+                val app = announcedAppInfo(packageName)
+                announcedOnlyPackages += packageName
+                appComboBox.addItem(app)
+                logger.info("📡 $packageName announced itself; adding it to the App selector")
+                if (hadSelection) continue
+
+                // Ranked, not first-past-the-post: `missing` has no meaningful order, and the
+                // user's own app must win it whatever position it arrives in.
+                val rank = when {
+                    // Their app coming back after a scan that could not find it.
+                    packageName == lastSelectedPackage -> 3
+                    // What the session is already capturing. Selecting it cannot repoint
+                    // anything - it is the filter that is in force.
+                    packageName == sessionFilter -> 2
+                    // Nothing was ever chosen and nothing is running: there is no choice to
+                    // overrule, and this app is the only candidate anyone has.
+                    lastSelectedPackage == null && currentMode == Mode.STOPPED -> 1
+                    else -> 0
+                }
+                if (rank > selectionRank) {
+                    selectionRank = rank
+                    toSelect = app
+                }
+            }
+            // Adding the first item to an empty model auto-selects it. Undo that unless we decided
+            // otherwise above - a live session must never be repointed behind the user's back.
+            if (!hadSelection) appComboBox.selectedItem = toSelect
+        } finally {
+            isRebuildingAppCombo = false
+        }
+
+        // Commit once, outside the guard, so selectedApp, the buttons and a live package filter
+        // all move together.
+        if (toSelect != null) onAppSelected()
+    }
+
+    /**
+     * The little the plugin knows about a package it has only ever met over the socket: its name,
+     * and that it certainly speaks the protocol.
+     */
+    private fun announcedAppInfo(packageName: String): AppInfo = AppInfo(
+        packageName = packageName,
+        appName = null,
+        versionName = null,
+        versionCode = null,
+        isSystemApp = false,
+        hasMockkHttp = true
+    )
+
+    /** Announced packages that [apps] does not already cover. */
+    private fun knownPackagesNotIn(apps: List<AppInfo>): List<String> {
+        val listed = apps.mapTo(HashSet()) { it.packageName }
+        return GlobalOkHttpInterceptorServer.getInstance()
+            .getKnownMockkHttpPackages()
+            .filterNot { it in listed }
     }
 
     private fun initializeAdb() {
@@ -675,6 +1009,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     // auto-scan is suppressed. After stop(), so the package filter of a live
                     // session is never touched.
                     appComboBox.removeAllItems()
+                    announcedOnlyPackages.clear()
                     scannedAppsSerial = null
 
                     if (replacement == null) {
@@ -820,6 +1155,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         isRebuildingAppCombo = true
         try {
             appComboBox.removeAllItems()
+            announcedOnlyPackages.clear()
         } finally {
             isRebuildingAppCombo = false
         }
@@ -911,6 +1247,14 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 // Update UI on EDT
                 logger.info("🔍 Found ${mockkHttpApps.size} app(s) with MockkHttp")
 
+                // An app that has PINGed has PROVEN it speaks the protocol - a stronger signal
+                // than any scan, which can miss a release build, run out of pull budget, or
+                // simply have run before the app was launched. Merging those packages in is why
+                // the selector can no longer be empty for an app the plugin is already talking
+                // to. They keep their own mark in the renderer, so the provenance stays visible.
+                val announcedOnly = knownPackagesNotIn(mockkHttpApps)
+                val listedApps = mockkHttpApps + announcedOnly.map { announcedAppInfo(it) }
+
                 // Repopulate with events suppressed and reconcile once at the end: an
                 // automatic rescan must not look like the user deselecting the app.
                 // Restore by package name, remembered independently of selectedApp: an empty
@@ -923,11 +1267,13 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     // Clear at apply-time too: guards against results from an earlier scan of
                     // a different device having been applied in between.
                     appComboBox.removeAllItems()
-                    mockkHttpApps.forEach { app ->
+                    announcedOnlyPackages.clear()
+                    announcedOnlyPackages += announcedOnly
+                    listedApps.forEach { app ->
                         appComboBox.addItem(app)
                     }
-                    if (mockkHttpApps.isNotEmpty()) {
-                        val restore = mockkHttpApps.indexOfFirst { it.packageName == previousPackage }
+                    if (listedApps.isNotEmpty()) {
+                        val restore = listedApps.indexOfFirst { it.packageName == previousPackage }
                         appComboBox.selectedIndex = when {
                             restore >= 0 -> restore
                             // Results can be legitimately incomplete (pull budget, timeouts),
@@ -946,7 +1292,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                 // An empty result means "this scan found nothing", not "the user deselected".
                 // Keep a live session's app so Stop and the mode controls stay usable.
-                if (mockkHttpApps.isNotEmpty() || currentMode == Mode.STOPPED) {
+                if (listedApps.isNotEmpty() || currentMode == Mode.STOPPED) {
                     onAppSelected()
                 }
 
@@ -979,7 +1325,16 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     }
                 }
 
-                if (mockkHttpApps.isEmpty()) {
+                // The scan found nothing but the wire did: say so, or the 📡 rows in the selector
+                // look like they came from a scan that just told the Logs tab the opposite.
+                if (mockkHttpApps.isEmpty() && announcedOnly.isNotEmpty()) {
+                    logger.info(
+                        "📡 The app scan found nothing, but ${announcedOnly.joinToString()} " +
+                        "announced itself to the plugin - listing it in the App selector"
+                    )
+                }
+
+                if (listedApps.isEmpty()) {
                     when (emulator.platform) {
                         DevicePlatform.ANDROID ->
                             logger.warn("⚠️ No apps with MockkHttp found. Tick 'Show all apps' to pick one manually, or make sure the Gradle plugin (native) / mockk_http (Flutter) is in your app.")
@@ -1070,30 +1425,38 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
+    /** The one place a Mode becomes the words in the status line. */
+    private fun statusTextFor(mode: Mode): String = when (mode) {
+        Mode.RECORDING -> "Recording..."
+        Mode.DEBUG -> "Debug Mode (Recording + Pause)"
+        Mode.MOCKK -> "Mockk Mode"
+        Mode.MOCKK_DEBUG -> "Mockk Debug Mode (Mock + Pause)"
+        Mode.STOPPED -> "Stopped"
+    }
+
+    private fun statusColorFor(mode: Mode): JBColor = when (mode) {
+        Mode.RECORDING -> JBColor.GREEN
+        Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
+        Mode.MOCKK -> JBColor.ORANGE
+        Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
+        Mode.STOPPED -> JBColor.GRAY
+    }
+
     private fun updateModeIfRunning() {
+        // The reconcile loop is moving these controls to match the session; it is not the user
+        // asking for a different mode.
+        if (isSyncingModeControls) return
         if (currentMode == Mode.STOPPED) return
 
         val newMode = getCurrentSelectedMode()
         if (newMode != currentMode && newMode != Mode.STOPPED) {
             // Update UI state
             currentMode = newMode
+            // The human is driving again: whatever an agent had set is now history.
+            lastLocalIntent = newMode
+            agentModeChangeAtMs = 0L
 
-            val statusText = when (newMode) {
-                Mode.RECORDING -> "Recording..."
-                Mode.DEBUG -> "Debug Mode (Recording + Pause)"
-                Mode.MOCKK -> "Mockk Mode"
-                Mode.MOCKK_DEBUG -> "Mockk Debug Mode (Mock + Pause)"
-                Mode.STOPPED -> "Stopped"
-            }
-            val statusColor = when (newMode) {
-                Mode.RECORDING -> JBColor.GREEN
-                Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
-                Mode.MOCKK -> JBColor.ORANGE
-                Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
-                Mode.STOPPED -> JBColor.GRAY
-            }
-
-            updateStatus(statusText, statusColor)
+            updateStatus(statusTextFor(newMode), statusColorFor(newMode))
 
             // Update server mode
             val serverMode = when (newMode) {
@@ -1103,7 +1466,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                 Mode.MOCKK_DEBUG -> OkHttpInterceptorServer.Mode.MOCKK_DEBUG
                 Mode.STOPPED -> return
             }
-            okHttpInterceptorServer.setMode(serverMode)
+            // Through the session service, not straight at the interceptor: it applies the same
+            // change and then tells everyone watching, so a UI-driven switch is as visible to the
+            // rest of the plugin as an agent-driven one. (It does no I/O; safe on the EDT.)
+            CaptureSessionService.getInstance(project).setMode(serverMode)
             logger.info("🔄 Mode changed to ${newMode.name} while running")
         }
     }
@@ -1115,7 +1481,10 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         // every app's flows and steal them from other open projects. A transient rescan that
         // empties the combo must keep the previous filter instead.
         val packageNameFilter = selectedApp?.packageName ?: return
-        okHttpInterceptorServer.setPackageNameFilter(packageNameFilter)
+        // Through the session service, like updateModeIfRunning: it applies the same change to the
+        // live registration AND remembers the package as the session's target, so the next
+        // parameterless session/start from an agent picks up what the human chose here.
+        CaptureSessionService.getInstance(project).setPackageFilter(packageNameFilter)
     }
 
     private fun startInterceptor() {
@@ -1133,8 +1502,17 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
 
     private fun start(mode: Mode) {
+        // Declared before the task is queued (both happen on the EDT), so the reconcile loop can
+        // tell this registration apart from one an agent made while we were starting.
+        lastLocalIntent = mode
+        agentModeChangeAtMs = 0L
+
         object : Task.Backgroundable(project, "Starting ${mode.name} Mode", true) {
             override fun run(indicator: ProgressIndicator) {
+                // Only a server THIS task brought up may be torn down on failure. start() also
+                // returns false when a session is already running — one an agent started a moment
+                // ago — and stopping that one would kill it under the agent's feet.
+                var startedHere = false
                 try {
                     logger.info("🔌 Starting ${mode.name} Mode...")
 
@@ -1178,7 +1556,21 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                     // Start OkHttpInterceptorServer with the selected mode and package filter
                     if (!okHttpInterceptorServer.start(serverMode, packageNameFilter)) {
-                        throw Exception("Failed to start OkHttp Interceptor Server")
+                        throw Exception(
+                            "Could not start the interceptor server. If a capture session is already running for " +
+                                    "this project (an agent can start one), the Inspector follows it as soon as it appears."
+                        )
+                    }
+                    startedHere = true
+
+                    // Tell the session service a human did this, so /v1/.../session reports the
+                    // real origin, device and start time instead of "unknown". The UI keeps owning
+                    // the start sequence itself — this only records who and what.
+                    try {
+                        com.sergiy.dev.mockkhttp.session.CaptureSessionService.getInstance(project)
+                            .noteUiSession(selectedEmulator, packageNameFilter)
+                    } catch (e: Exception) {
+                        logger.warn("⚠️ Could not record the session origin", e)
                     }
 
                     logger.info("✅ OkHttp Interceptor Server started on port ${OkHttpInterceptorServer.SERVER_PORT}")
@@ -1188,23 +1580,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
                     // Update UI
                     SwingUtilities.invokeLater {
                         currentMode = mode
-
-                        val statusText = when (mode) {
-                            Mode.RECORDING -> "Recording..."
-                            Mode.DEBUG -> "Debug Mode (Recording + Pause)"
-                            Mode.MOCKK -> "Mockk Mode"
-                            Mode.MOCKK_DEBUG -> "Mockk Debug Mode (Mock + Pause)"
-                            Mode.STOPPED -> "Stopped"
-                        }
-                        val statusColor = when (mode) {
-                            Mode.RECORDING -> JBColor.GREEN
-                            Mode.DEBUG -> JBColor(java.awt.Color.CYAN, java.awt.Color.CYAN)
-                            Mode.MOCKK -> JBColor.ORANGE
-                            Mode.MOCKK_DEBUG -> JBColor(java.awt.Color.MAGENTA, java.awt.Color.MAGENTA)
-                            Mode.STOPPED -> JBColor.GRAY
-                        }
-
-                        updateStatus(statusText, statusColor)
+                        updateStatus(statusTextFor(mode), statusColorFor(mode))
                         updateButtonStates()
                     }
 
@@ -1212,7 +1588,7 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
 
                 } catch (e: Exception) {
                     logger.error("Failed to start ${mode.name} mode", e)
-                    okHttpInterceptorServer.stop()
+                    if (startedHere) okHttpInterceptorServer.stop()
 
                     SwingUtilities.invokeLater {
                         currentMode = Mode.STOPPED
@@ -1240,6 +1616,11 @@ class InspectorPanel(private val project: Project) : JPanel(BorderLayout()) {
         finalStatusColor: JBColor = JBColor.GRAY,
         device: EmulatorInfo? = selectedEmulator
     ) {
+        // Same reason as start(): the unregistration reaches the reconcile loop before this task's
+        // own EDT callback does, and it must not be read as an agent stopping the session.
+        lastLocalIntent = Mode.STOPPED
+        agentModeChangeAtMs = 0L
+
         object : Task.Backgroundable(project, "Stopping Interceptor Server", false) {
             override fun run(indicator: ProgressIndicator) {
                 try {

@@ -112,6 +112,24 @@ class OkHttpMethodVisitor(
             hasLoggedInjection = true
         }
 
+        if (builderOwner.contains("okhttp3")) {
+            // Stack: [builder] -> MockkHttpInterceptor.install(builder) -> [builder]
+            //
+            // install() adds the interceptor only when the builder does not carry one yet and
+            // returns the same builder, so the call site keeps chaining. The sequence below it
+            // (kept for the legacy okhttp2 owner) added a fresh copy in front of EVERY build():
+            // a builder built twice, or one derived from an existing client with newBuilder(),
+            // collected one copy per build() and the same request was captured that many times.
+            mv.visitMethodInsn(
+                Opcodes.INVOKESTATIC,
+                "com/sergiy/dev/mockkhttp/interceptor/MockkHttpInterceptor",
+                "install",
+                "(Lokhttp3/OkHttpClient\$Builder;)Lokhttp3/OkHttpClient\$Builder;",
+                false
+            )
+            return
+        }
+
         // Stack before: [builder]
 
         // Duplicate builder reference for addInterceptor call

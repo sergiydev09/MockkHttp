@@ -36,7 +36,7 @@ class HelpPanel(project: Project) : JPanel(BorderLayout()) {
     companion object {
         // Versions shown in the setup snippets — keep in sync on releases (see VERSION_FILES.md)
         private const val GRADLE_PLUGIN_VERSION = "1.6.1"
-        private const val FLUTTER_PACKAGE_VERSION = "1.7.1"
+        private const val FLUTTER_PACKAGE_VERSION = "1.8.0"
 
         private const val CARD_ANDROID = "android"
         private const val CARD_FLUTTER = "flutter"
@@ -211,7 +211,7 @@ void main() {
   runApp(MyApp());
 }</pre>
         <p>Using <strong>dio</strong>? Add its interceptor instead:
-        <code>dio.interceptors.add(MockkHttpDioInterceptor())</code></p>
+        <code>dio.interceptors.add(MockkHttpDioInterceptor(dio: dio))</code></p>
 
         <h2>3 · Run it &amp; start intercepting</h2>
         <ul>

@@ -454,7 +454,8 @@ class OkHttpInterceptorServer(private val project: Project) : Disposable {
             duration = androidFlow.duration / 1000.0,     // Convert ms to seconds
             mockApplied = false,
             mockRuleName = null,
-            mockRuleId = null
+            mockRuleId = null,
+            clientRunId = androidFlow.client?.runId
         )
     }
 }
@@ -470,7 +471,9 @@ data class AndroidFlowData(
     val timestamp: Long,
     val duration: Long,
     val projectId: String? = null,      // Optional: helps route to correct project
-    val packageName: String? = null     // Optional: app package name for routing
+    val packageName: String? = null,    // Optional: app package name for routing
+    /** The client's report about itself (1.8.0+): the same object the global server records, kept with the flow. */
+    val client: com.sergiy.dev.mockkhttp.model.ClientReport? = null
 )
 
 data class AndroidRequestData(

@@ -1,0 +1,11 @@
+# What dart pub publish must never ship. A .pubignore replaces .gitignore for pub, so the usual
+# build noise is listed here too. Probe and audit files are throwaway measurements from review
+# sessions; audit round 14 found four of them inside the tarball dart pub publish would upload.
+.dart_tool/
+.packages
+build/
+.idea/
+*.iml
+pubspec.lock
+test/probe_*
+test/audit_*

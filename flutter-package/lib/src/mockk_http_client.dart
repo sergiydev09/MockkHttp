@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'mockk_http_core.dart';
 import 'models.dart';
 
 /// Low-level TCP client that communicates with the MockkHttp IntelliJ plugin.
@@ -29,7 +30,8 @@ class MockkHttpPluginClient {
   bool get hostConfirmed => _hostConfirmed;
 
   /// Legacy alias kept for backwards compatibility (Android emulator host).
-  @Deprecated('Use MockkHttpPluginClient(host: ...) or the resolved [host] field')
+  @Deprecated(
+      'Use MockkHttpPluginClient(host: ...) or the resolved [host] field')
   static const String emulatorHost = '10.0.2.2';
 
   static const int _connectionTimeoutMs = 5000;
@@ -207,19 +209,24 @@ class MockkHttpPluginClient {
         packageName: packageName,
       );
 
-      final json = jsonEncode(mockCheckRequest.toJson());
+      final json = jsonEncode({
+        ...mockCheckRequest.toJson(),
+        'client': MockkHttpCore.clientReport()
+      });
       socket.add(utf8.encode('$json\n'));
       await socket.flush();
 
       final responseJson = (await _readMessage(
-            socket,
-            const Duration(milliseconds: _connectionTimeoutMs),
-          ))
+        socket,
+        const Duration(milliseconds: _connectionTimeoutMs),
+      ))
           ?.trim();
 
       await socket.close();
 
-      if (responseJson == null || responseJson.isEmpty || responseJson == 'PONG') {
+      if (responseJson == null ||
+          responseJson.isEmpty ||
+          responseJson == 'PONG') {
         return null;
       }
 
@@ -241,19 +248,22 @@ class MockkHttpPluginClient {
         timeout: const Duration(milliseconds: _connectionTimeoutMs),
       );
 
-      final json = jsonEncode(flow.toJson());
+      final json = jsonEncode(
+          {...flow.toJson(), 'client': MockkHttpCore.clientReport()});
       socket.add(utf8.encode('$json\n'));
       await socket.flush();
 
       final responseJson = (await _readMessage(
-            socket,
-            const Duration(milliseconds: _readTimeoutMs),
-          ))
+        socket,
+        const Duration(milliseconds: _readTimeoutMs),
+      ))
           ?.trim();
 
       await socket.close();
 
-      if (responseJson == null || responseJson.isEmpty || responseJson == 'PONG') {
+      if (responseJson == null ||
+          responseJson.isEmpty ||
+          responseJson == 'PONG') {
         return null;
       }
 
@@ -303,7 +313,8 @@ class MockkHttpPluginClient {
         timeout: const Duration(milliseconds: _connectionTimeoutMs),
       );
 
-      final json = jsonEncode(flow.toJson());
+      final json = jsonEncode(
+          {...flow.toJson(), 'client': MockkHttpCore.clientReport()});
       socket.add(utf8.encode('$json\n'));
       await socket.flush();
       await socket.close();

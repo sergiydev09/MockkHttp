@@ -22,8 +22,11 @@ class MockkHttpToolWindowFactory : ToolWindowFactory, DumbAware {
         logger.info("Creating MockkHttp Tool Window content...")
         
         try {
-            // Create main window content
-            val toolWindowContent = MockkHttpToolWindow(project)
+            // toolWindow.disposable is disposed when the tool window goes away — including on a
+            // dynamic plugin unload (update or disable without restart). Panels that keep timers or
+            // app-level listeners must hang off THAT, not off the project, or they outlive the
+            // classloader they belong to and the IDE has to force a restart.
+            val toolWindowContent = MockkHttpToolWindow(project, toolWindow.disposable)
             
             // Create content and add to tool window
             val contentFactory = ContentFactory.getInstance()

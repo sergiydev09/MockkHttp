@@ -1,6 +1,7 @@
 package com.sergiy.dev.mockkhttp.proxy
 
 import com.google.gson.Gson
+import com.google.gson.JsonObject
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
@@ -11,6 +12,7 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
 import java.net.BindException
+import java.util.concurrent.ConcurrentHashMap
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -117,7 +119,80 @@ class GlobalOkHttpInterceptorServer : Disposable {
     )
 
     companion object {
+        /**
+         * Make a FLOW message parse into non-null wire DTOs, or say why it cannot. Optional fields
+         * (bodies, headers, the whole response) get their defaults IN the JSON so Gson never leaves
+         * a non-null Kotlin field null; a message without an id, a request, a method or a URL
+         * cannot become a flow and is rejected by name (audit round 12, AS). Returns null when the
+         * message is usable.
+         */
+        fun normaliseFlowMessage(message: JsonObject, dropped: MutableList<String>? = null): String? {
+            fun JsonObject.text(name: String): String? =
+                get(name)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+
+            if (message.text("flowId") == null) return "FLOW without flowId"
+            val request = message.get("request")?.takeIf { it.isJsonObject }?.asJsonObject ?: return "FLOW without request"
+            if (request.text("method") == null) return "request without method"
+            if (request.text("url") == null) return "request without url"
+            if (request.get("headers")?.isJsonObject != true) request.add("headers", JsonObject())
+            dropNonTextValues(request.getAsJsonObject("headers")).forEach { dropped?.add("request $it") }
+            if (request.get("body")?.isJsonPrimitive != true) request.addProperty("body", "")
+            val response = message.get("response")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: JsonObject().also { message.add("response", it) }
+            if (response.get("statusCode")?.isJsonPrimitive != true) response.addProperty("statusCode", 0)
+            if (response.get("headers")?.isJsonObject != true) response.add("headers", JsonObject())
+            dropNonTextValues(response.getAsJsonObject("headers")).forEach { dropped?.add("response $it") }
+            if (response.get("body")?.isJsonPrimitive != true) response.addProperty("body", "")
+            // A flow without a timestamp was dated 1970; the moment it arrived is the honest default.
+            if (message.get("timestamp")?.isJsonPrimitive != true) message.addProperty("timestamp", System.currentTimeMillis())
+            if (message.get("duration")?.isJsonPrimitive != true) message.addProperty("duration", 0)
+            return null
+        }
+
+        /**
+         * A header whose value is null, an object or an array cannot travel in a `Map<String, String>`
+         * and is dropped; a number or a boolean is a JSON primitive that Gson reads as text, and stays.
+         * Returns the names dropped, so the flow can be logged as shorter than it was sent — never
+         * silently (audit round 14, AZ).
+         */
+        private fun dropNonTextValues(headers: JsonObject): List<String> {
+            val bad = headers.entrySet().filter { it.value?.isJsonPrimitive != true }.map { it.key }
+            bad.forEach { headers.remove(it) }
+            return bad
+        }
+
+        /** The CHECK_MOCK counterpart of [normaliseFlowMessage]: a request with a method and a URL, or a reason. */
+        fun normaliseMockCheckMessage(message: JsonObject): String? {
+            fun JsonObject.text(name: String): String? =
+                get(name)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+
+            val request = message.get("request")?.takeIf { it.isJsonObject }?.asJsonObject ?: return "CHECK_MOCK without request"
+            if (request.text("method") == null) return "request without method"
+            if (request.text("url") == null) return "request without url"
+            if (request.get("headers")?.isJsonObject != true) request.add("headers", JsonObject())
+            if (request.get("body")?.isJsonPrimitive != true) request.addProperty("body", "")
+            return null
+        }
+
         const val SERVER_PORT = 9876
+
+        /**
+         * The mode reported when NO capture session owns the caller's traffic.
+         *
+         * Until now this server answered every CHECK_MOCK with a live mode — "RECORDING" — even
+         * with zero projects registered. The app under test believed it was being recorded, so for
+         * EVERY request it buffered the whole response body and opened a second socket to ship a
+         * flow that this server then dropped on the floor (see [routeFlow]: no registration, no
+         * capture). Real memory and real latency, charged to the app, for nothing, to anyone who
+         * merely had the IDE open.
+         *
+         * IDLE is the honest answer, and it is safe to send to EVERY client version. Both shipped
+         * clients funnel an unrecognised mode into a fallback that is no worse than what they do
+         * today: the native interceptor's `else` branch is already a bare `chain.proceed()`, and
+         * the Flutter 1.7.1 `default` shares the RECORDING case, i.e. exactly the behaviour they
+         * had before this existed. No capability negotiation is needed.
+         */
+        const val IDLE_MODE = "IDLE"
 
         /**
          * How long the app waits for our reply before giving up, in ms.
@@ -229,6 +304,176 @@ class GlobalOkHttpInterceptorServer : Disposable {
         MOCKK_DEBUG   // Apply mock THEN pause for editing
     }
 
+    /** A client's report about itself, and when and from which app it last arrived. */
+    data class ReportedClient(
+        val packageName: String?,
+        val report: com.sergiy.dev.mockkhttp.model.ClientReport,
+        val seenAt: Long
+    )
+
+    /** Last report per package, plus the last one seen from anyone: what `status.client` shows. */
+    private val clientReports = ConcurrentHashMap<String, ReportedClient>()
+
+    @Volatile
+    private var lastClientReport: ReportedClient? = null
+
+    /**
+     * Remember what a client just said about itself. Called for every CHECK_MOCK and FLOW that
+     * carries a `client` object; clients older than 1.8.0 never do, and are simply unknown.
+     */
+    fun recordClientReport(packageName: String?, report: com.sergiy.dev.mockkhttp.model.ClientReport) {
+        val reported = ReportedClient(packageName, report, System.currentTimeMillis())
+        synchronized(reportLock) {
+            if (!packageName.isNullOrBlank()) clientReports[packageName] = freshest(clientReports[packageName], reported)
+            lastClientReport = freshest(lastClientReport, reported)
+        }
+    }
+
+    private val reportLock = Any()
+
+    /**
+     * Every CHECK_MOCK and FLOW opens its own socket and is served on its own thread, so a report
+     * built earlier can be recorded later. Within one run the client's counters only grow, so the
+     * report with the higher `seq` (or, from a client that sends none, the higher `flows_sent`)
+     * is the later one; an overtaken message must not roll the numbers back (adversarial review
+     * of audit round 11). A report from a different run, or a different app for the "last from
+     * anyone" slot, always replaces.
+     */
+    private fun freshest(current: ReportedClient?, incoming: ReportedClient): ReportedClient {
+        if (current == null || current.report.runId != incoming.report.runId) return incoming
+        val currentSeq = current.report.seq
+        val incomingSeq = incoming.report.seq
+        if (currentSeq != null && incomingSeq != null) return if (incomingSeq >= currentSeq) incoming else current
+        val currentSent = current.report.stats?.get("flows_sent") ?: 0L
+        val incomingSent = incoming.report.stats?.get("flows_sent") ?: 0L
+        return if (incomingSent >= currentSent) incoming else current
+    }
+
+    /**
+     * The report for [packageName], or — for a project with no package filter, which captures
+     * whoever talks — the last report from anyone. Null until a 1.8.0 client has spoken.
+     */
+    fun clientReportFor(packageName: String?): ReportedClient? =
+        // A project WITH a filter gets its own app's report or nothing: falling back to whoever
+        // spoke last published another app's numbers as this project's (audit round 8, AH).
+        if (packageName != null) clientReports[packageName] else lastClientReport
+
+    /** Every report on record — the latest per package, plus the last from anyone: what a clear snapshots. */
+    fun allClientReports(): List<ReportedClient> =
+        (clientReports.values + listOfNotNull(lastClientReport)).distinct()
+
+    private val rejectedTotal = java.util.concurrent.atomic.AtomicLong()
+    private val rejectedUnknown = java.util.concurrent.atomic.AtomicLong()
+    private val rejectedByPackage = ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+    /** Rejections so far: by app, the ones no app could be named for, and all of them together. */
+    data class Rejections(val byPackage: Map<String, Long>, val unknown: Long, val total: Long) {
+        fun forPackage(packageName: String): Long = byPackage[packageName] ?: 0L
+    }
+
+    fun rejections(): Rejections =
+        Rejections(rejectedByPackage.mapValues { it.value.get() }, rejectedUnknown.get(), rejectedTotal.get())
+
+    private val headersDroppedTotal = java.util.concurrent.atomic.AtomicLong()
+    private val headersDroppedUnknown = java.util.concurrent.atomic.AtomicLong()
+    private val headersDroppedByPackage = ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+    /**
+     * A stored flow is shorter than the app sent it: headers whose value was not text were dropped.
+     * Named in the log, and counted here for `since_clear.headers_dropped`, because the agent reads
+     * the control plane and not idea.log (audit round 15, AZ).
+     */
+    fun noteHeadersDropped(packageName: String?, count: Int) {
+        if (count <= 0) return
+        headersDroppedTotal.addAndGet(count.toLong())
+        if (packageName.isNullOrBlank()) {
+            headersDroppedUnknown.addAndGet(count.toLong())
+        } else {
+            headersDroppedByPackage.computeIfAbsent(packageName) { java.util.concurrent.atomic.AtomicLong() }.addAndGet(count.toLong())
+        }
+    }
+
+    /** Headers dropped so far, shaped like [rejections]: by app, unnamed, total. */
+    fun headersDropped(): Rejections =
+        Rejections(headersDroppedByPackage.mapValues { it.value.get() }, headersDroppedUnknown.get(), headersDroppedTotal.get())
+
+    /**
+     * What a clear of a project's flows remembers about the outside world: every client's report
+     * (a run absent from it had sent nothing by then) and the rejections so far, by app. Taken by
+     * FlowStore itself on every clear — the agent's or the Inspector's — so no listener has to
+     * be attached first (adversarial review of audit round 12).
+     */
+    data class ClearSnapshot(
+        val reports: List<ReportedClient>,
+        val rejections: Rejections,
+        val headersDropped: Rejections = Rejections(emptyMap(), 0L, 0L)
+    )
+
+    fun clearSnapshot(): ClearSnapshot = ClearSnapshot(allClientReports(), rejections(), headersDropped())
+
+    /**
+     * A message on port 9876 that could not be turned into a flow or a mock check. It is answered
+     * normally (the app must never hang on a bad message) but it is NOT in the flow list, and the
+     * app's own `flows_sent` still counts it — so it is counted here, where `since_clear` looks,
+     * and said in the log at WARN, not as an IDE error (audit round 12, AS).
+     */
+    fun noteRejected(packageName: String?, reason: String) {
+        rejectedTotal.incrementAndGet()
+        if (packageName.isNullOrBlank()) {
+            rejectedUnknown.incrementAndGet()
+        } else {
+            rejectedByPackage.computeIfAbsent(packageName) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+        }
+        logger.warn("⚠️ MockkHttp rejected a message from ${packageName ?: "an unknown app"}: $reason. It is not in the flow list; status.flows.rejected_since_clear counts it.")
+    }
+
+    /** Messages rejected since this IDE started, from every app. */
+    fun rejectedTotal(): Long = rejectedTotal.get()
+
+    /** Messages rejected since this IDE started, from [packageName]. */
+    fun rejectedFor(packageName: String): Long = rejectedByPackage[packageName]?.get() ?: 0L
+
+    /**
+     * The discovery file publishes `bound` / `ownedByThisProcess` / `heldByPid`, and it is read by
+     * an agent BEFORE it talks to anyone — and by a second IDE deciding whether 9876 is free. It
+     * used to be rewritten only on session changes, so from IDE start to the first one it said
+     * the port was free while this process was listening on it (audit round 8, AJ).
+     */
+    private fun notifyDiscovery(reason: String) {
+        try {
+            com.sergiy.dev.mockkhttp.agent.InstanceRegistry.getInstance().scheduleRefresh(reason)
+        } catch (e: Exception) {
+            logger.debug("Could not schedule a discovery refresh ($reason): ${e.message}")
+        }
+    }
+
+    /**
+     * The ONE place an [InterceptMode] becomes a mode string, for every plane.
+     *
+     * The control plane used to derive its own answer ("mode": null, "running": false) while this
+     * server independently told the device "mode": "RECORDING" at the very same instant — two
+     * sources of truth that could, and did, disagree. Everything that names a mode now goes
+     * through here, so both planes say "no session" in the same word: [IDLE_MODE].
+     *
+     * A null [mode] means exactly that: nobody is registered to capture this traffic.
+     */
+    fun wireModeName(mode: InterceptMode?): String = when (mode) {
+        InterceptMode.RECORDING -> "RECORDING"
+        InterceptMode.DEBUG -> "DEBUG"
+        InterceptMode.MOCKK -> "MOCKK"
+        InterceptMode.MOCKK_DEBUG -> "MOCKK_DEBUG"
+        null -> IDLE_MODE
+    }
+
+    /**
+     * The mode [project]'s traffic is subject to RIGHT NOW, or [IDLE_MODE] when it has no session.
+     *
+     * This is the same string the device is being told on port 9876, so the control plane (REST /
+     * MCP) can report it verbatim instead of computing a second opinion.
+     */
+    fun modeForProject(project: Project): String =
+        wireModeName(registeredProjects[project.locationHash]?.mode)
+
     /**
      * Handler interface for receiving flows in a project.
      */
@@ -295,6 +540,7 @@ class GlobalOkHttpInterceptorServer : Disposable {
             }.also { it.start() }
 
             logger.info("✅ Global interceptor server listening on port $SERVER_PORT ($scope)")
+            notifyDiscovery("interceptor bound")
             true
 
         } catch (e: Exception) {
@@ -312,6 +558,7 @@ class GlobalOkHttpInterceptorServer : Disposable {
             serverSocket = null
             connectionPool?.shutdownNow()
             connectionPool = null
+            notifyDiscovery("interceptor bind failed")
             false
         }
     }
@@ -418,6 +665,7 @@ class GlobalOkHttpInterceptorServer : Disposable {
         // UI report a stale "Address already in use" for a server the user simply switched off.
         lastBindError = null
         logger.info("✅ Global interceptor server stopped")
+        notifyDiscovery("interceptor unbound")
     }
 
     /**
@@ -657,7 +905,10 @@ class GlobalOkHttpInterceptorServer : Disposable {
      *
      * Used whenever a connection cannot be served normally. A CHECK_MOCK client reads this as `{}`,
      * whose `hasMock` defaults to false — i.e. "no mock, do the real call" — so the same failsafe is
-     * correct for both message types.
+     * correct for both message types. Its `mode` is absent too, which an up-to-date client now reads
+     * as [IDLE_MODE] and skips capture for that ONE request: the only way to get here is a server
+     * that is shutting down or has all its connection slots parked on intercept dialogs, and in both
+     * of those states a flow would not have been captured anyway. The next request re-checks.
      */
     private fun answerOriginalAndClose(socket: Socket) {
         try {
@@ -711,6 +962,7 @@ class GlobalOkHttpInterceptorServer : Disposable {
                 isRunning = false
                 lastBindError = "The listener on port $SERVER_PORT stopped unexpectedly. Restart capture to rebind."
                 logger.warn("⚠️ $lastBindError")
+                notifyDiscovery("interceptor listener died")
             }
             logger.debug("Global server loop ended")
         }
@@ -763,31 +1015,59 @@ class GlobalOkHttpInterceptorServer : Disposable {
                 }
 
                 // Detect message type by checking for "type" field
-                val messageType = try {
-                    val jsonObject = com.google.gson.JsonParser.parseString(json).asJsonObject
-                    jsonObject.get("type")?.asString
+                val parsed = try {
+                    com.google.gson.JsonParser.parseString(json).asJsonObject
                 } catch (e: Exception) {
                     null
+                }
+                val messageType = parsed?.get("type")?.takeIf { it.isJsonPrimitive }?.asString
+                // The client's report about itself rides on every message; a malformed one is
+                // dropped, never allowed to fail the message it came with.
+                val clientReport = parsed?.get("client")?.takeIf { it.isJsonObject }?.let {
+                    try {
+                        gson.fromJson(it, com.sergiy.dev.mockkhttp.model.ClientReport::class.java)
+                    } catch (e: Exception) {
+                        null
+                    }
                 }
 
                 when (messageType) {
                     "CHECK_MOCK" -> {
-                        // Handle mock check request
-                        val mockCheckRequest = try {
-                            gson.fromJson(json, com.sergiy.dev.mockkhttp.model.MockCheckRequest::class.java)
-                        } catch (e: Exception) {
-                            logger.error("Failed to parse mock check request", e)
-                            writer.println(gson.toJson(com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMockUnknown()))
+                        // Handle mock check request. Validated on the JSON first: a request without
+                        // a method or a URL parses into non-null Kotlin fields anyway, and further
+                        // down findMockForRequest swallows the resulting exception into a normal
+                        // "no mock" answer — which is exactly what a rejected message must not
+                        // look like (adversarial review of audit round 12).
+                        val checkRejection = if (parsed == null) "CHECK_MOCK is not a JSON object" else normaliseMockCheckMessage(parsed)
+                        val mockCheckRequest = if (checkRejection == null) {
+                            try {
+                                gson.fromJson(parsed, com.sergiy.dev.mockkhttp.model.MockCheckRequest::class.java)
+                            } catch (e: Exception) {
+                                null
+                            }
+                        } else null
+                        if (checkRejection != null || mockCheckRequest == null) {
+                            noteRejected(parsed?.get("packageName")?.takeIf { it.isJsonPrimitive }?.asString, checkRejection ?: "CHECK_MOCK did not parse")
+                            writer.println(gson.toJson(unparseableMockCheckAnswer()))
                             answered = true
                             return
                         }
 
                         rememberPackage(mockCheckRequest.packageName)
+                        clientReport?.let { recordClientReport(mockCheckRequest.packageName, it) }
 
-                        logger.debug("🔍 CHECK_MOCK: ${mockCheckRequest.request.method} ${mockCheckRequest.request.url}")
-
-                        // Find matching mock rule
-                        val mockResponse = findMockForRequest(mockCheckRequest)
+                        // Find matching mock rule. A CHECK_MOCK missing its request, method or URL
+                        // parses (Gson does not check Kotlin nullability) and blows up here; that is
+                        // a rejected message, answered as such and counted, not an IDE error.
+                        val mockResponse = try {
+                            logger.debug("🔍 CHECK_MOCK: ${mockCheckRequest.request.method} ${mockCheckRequest.request.url}")
+                            findMockForRequest(mockCheckRequest)
+                        } catch (e: Exception) {
+                            noteRejected(mockCheckRequest.packageName, "CHECK_MOCK without a usable request (${e.javaClass.simpleName})")
+                            writer.println(gson.toJson(unparseableMockCheckAnswer()))
+                            answered = true
+                            return
+                        }
                         val responseJson = gson.toJson(mockResponse)
                         writer.println(responseJson)
                         answered = true
@@ -800,11 +1080,33 @@ class GlobalOkHttpInterceptorServer : Disposable {
                     }
 
                     else -> {
-                        // Handle normal flow data (FLOW type or no type field)
-                        val flowData = try {
-                            gson.fromJson(json, AndroidFlowData::class.java)
-                        } catch (e: Exception) {
-                            logger.error("Failed to parse flow data", e)
+                        // Handle normal flow data (FLOW type or no type field). The wire DTOs are
+                        // non-null Kotlin, which Gson does not enforce: a field missing or null used
+                        // to parse fine and NPE later, in convertToHttpFlowData — the message went
+                        // unstored, the app got the normal {} reply, and nothing counted it (audit
+                        // round 12, AS). Now the message is normalised first (absent optional fields
+                        // get their defaults), a message that cannot become a flow is rejected here,
+                        // and every rejection is counted where `since_clear` looks.
+                        val droppedHeaders = ArrayList<String>()
+                        val rejection = if (parsed == null) "FLOW is not a JSON object" else normaliseFlowMessage(parsed, droppedHeaders)
+                        if (droppedHeaders.isNotEmpty()) {
+                            noteHeadersDropped(parsed?.get("packageName")?.takeIf { it.isJsonPrimitive }?.asString, droppedHeaders.size)
+                            logger.warn(
+                                "⚠️ MockkHttp dropped ${droppedHeaders.size} header(s) whose value was not text from flow " +
+                                        "${parsed?.get("flowId")?.takeIf { it.isJsonPrimitive }?.asString}: ${droppedHeaders.joinToString(", ")}. " +
+                                        "The flow is stored with fewer headers than the app sent."
+                            )
+                        }
+                        val flowData = if (rejection == null) {
+                            try {
+                                gson.fromJson(parsed, AndroidFlowData::class.java)
+                            } catch (e: Exception) {
+                                null
+                            }
+                        } else null
+                        if (rejection != null || flowData == null) {
+                            val pkg = parsed?.get("packageName")?.takeIf { it.isJsonPrimitive }?.asString
+                            noteRejected(pkg, rejection ?: "FLOW did not parse")
                             writer.println(gson.toJson(ModifiedResponseData.original()))
                             answered = true
                             return
@@ -814,6 +1116,7 @@ class GlobalOkHttpInterceptorServer : Disposable {
                         // Relying on PING:<pkg> alone meant native Android apps —
                         // which sent a bare PING — never appeared in the known set.
                         rememberPackage(flowData.packageName)
+                        clientReport?.let { recordClientReport(flowData.packageName, it) }
 
                         logger.info("🔴 INTERCEPTED: ${flowData.request.method} ${flowData.request.url}")
                         logger.info("   📦 Package: ${flowData.packageName ?: "unknown"}")
@@ -964,6 +1267,23 @@ class GlobalOkHttpInterceptorServer : Disposable {
     }
 
     /**
+     * What to answer when a CHECK_MOCK could not even be parsed.
+     *
+     * With no project registered there is nothing that could capture anything, so [IDLE_MODE] is
+     * true regardless of what the unreadable request said. With a session up we cannot tell WHOSE
+     * request this was — the package name died with the parse — so the conservative "we are
+     * recording" answer stands: a malformed check must not silently switch capture off for a
+     * running session, and the FLOW that follows arrives on its own connection with its own
+     * package name and routes normally.
+     */
+    private fun unparseableMockCheckAnswer(): com.sergiy.dev.mockkhttp.model.MockCheckResponse =
+        if (registeredProjects.isEmpty()) {
+            com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMock(IDLE_MODE)
+        } else {
+            com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMockUnknown()
+        }
+
+    /**
      * Find mock for a CHECK_MOCK request.
      * Returns MockCheckResponse with mock data if available.
      */
@@ -972,16 +1292,14 @@ class GlobalOkHttpInterceptorServer : Disposable {
         val targetProject = findTargetProjectForMockCheck(mockCheckRequest)
 
         if (targetProject == null) {
-            logger.debug("No target project found for mock check")
-            return com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMockUnknown()
+            // No session, or a session whose package filter excludes this app. Either way NOTHING
+            // would be done with a flow from it — routeFlow() drops it — so say so instead of
+            // naming a live mode and having the app buffer and ship a flow into the void.
+            logger.debug("🔍 No capture session for ${mockCheckRequest.packageName ?: "unknown app"} — answering $IDLE_MODE")
+            return com.sergiy.dev.mockkhttp.model.MockCheckResponse.noMock(IDLE_MODE)
         }
 
-        val currentMode = when (targetProject.mode) {
-            InterceptMode.RECORDING -> "RECORDING"
-            InterceptMode.DEBUG -> "DEBUG"
-            InterceptMode.MOCKK -> "MOCKK"
-            InterceptMode.MOCKK_DEBUG -> "MOCKK_DEBUG"
-        }
+        val currentMode = wireModeName(targetProject.mode)
 
         // Only do mock lookup if in MOCKK or MOCKK_DEBUG mode
         if (targetProject.mode != InterceptMode.MOCKK && targetProject.mode != InterceptMode.MOCKK_DEBUG) {

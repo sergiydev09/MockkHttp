@@ -36,6 +36,7 @@
             <li><strong>Works with Certificate Pinning:</strong> interception happens inside the app, so there is no TLS man-in-the-middle to break pinning</li>
             <li><strong>Debug Builds Only:</strong> automatically excluded from release builds (multiple security layers)</li>
             <li><strong>Failsafe Design:</strong> if the plugin server is not running, requests pass through untouched</li>
+            <li><strong>AI Agent Access (MCP):</strong> Claude Code or any MCP client can read captured traffic, create and explain mock rules and drive the capture session through a bundled, loopback-only bridge — with redaction of credentials and a full audit trail in the Inspector</li>
         </ul>
 
         <h3>Setup:</h3>
@@ -92,4 +93,12 @@
                 displayType="BALLOON"
                 toolWindowId="MockkHttp"/>
     </extensions>
+
+    <!-- Keeps ~/.mockkhttp/instances/<id>.json honest about which projects are open, so the MCP
+         bridge never resolves a working directory to a project the IDE has already disposed. -->
+    <applicationListeners>
+        <listener
+                class="com.sergiy.dev.mockkhttp.agent.InstanceFileProjectListener"
+                topic="com.intellij.openapi.project.ProjectManagerListener"/>
+    </applicationListeners>
 </idea-plugin>

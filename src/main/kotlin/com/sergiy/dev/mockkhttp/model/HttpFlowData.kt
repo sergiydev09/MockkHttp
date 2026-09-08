@@ -17,7 +17,12 @@ data class HttpFlowData(
     val mockApplied: Boolean = false,
     val mockRuleName: String? = null,
     val mockRuleId: String? = null,
-    val modified: Boolean = false  // True if response was modified in Debug mode
+    val modified: Boolean = false,  // True if response was modified in Debug mode
+    /**
+     * `client.run_id` of the message that carried this flow: the app run it came from. Null for
+     * clients older than 1.8.0 and for imported flows — a provenance `since_clear` cannot vouch for.
+     */
+    val clientRunId: String? = null
 )
 
 /**

@@ -40,6 +40,12 @@ android {
         abortOnError = false
     }
 
+    testOptions {
+        // android.util.Log is on every path of the interceptor; on the JVM the android.jar stubs
+        // must return defaults instead of throwing "Method ... not mocked".
+        unitTests.isReturnDefaultValues = true
+    }
+
     // Configure the 'release' publication variant explicitly to avoid the
     // "Android Publication 'release' Misconfigured" warning during configuration.
     publishing {
@@ -57,6 +63,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.13.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 
 afterEvaluate {

@@ -19,11 +19,24 @@ class MockkHttpOverrides extends HttpOverrides {
   final MockkHttpCore core;
   final HttpOverrides? _previous;
 
-  MockkHttpOverrides(this.core) : _previous = HttpOverrides.current;
+  MockkHttpOverrides(this.core) : _previous = _notOurs(HttpOverrides.current);
 
   /// Install these overrides globally, preserving any existing overrides.
+  ///
+  /// Calling this twice — `MockkHttp.init()` from two places, a test that installs on top of
+  /// an app that already did — replaces the earlier MockkHttp layer instead of wrapping it:
+  /// two of our wrappers around one `HttpClient` captured every request twice.
   static void install(MockkHttpCore core) {
     HttpOverrides.global = MockkHttpOverrides(core);
+  }
+
+  /// The overrides to chain onto: whatever was there before MockkHttp, never MockkHttp itself.
+  static HttpOverrides? _notOurs(HttpOverrides? current) {
+    var candidate = current;
+    while (candidate is MockkHttpOverrides) {
+      candidate = candidate._previous;
+    }
+    return candidate;
   }
 
   @override
@@ -46,14 +59,24 @@ class _MockkHttpClient implements HttpClient {
 
   @override
   Future<HttpClientRequest> openUrl(String method, Uri url) async {
+    // A dio interceptor above hands its claim over through the zone its adapter wrapper opened
+    // around the real adapter; the request itself is exactly what the app wrote.
+    final claim = Zone.current[MockkHttpCore.zoneClaimKey];
+    // No claim: this layer captures on its own — and remembers that it did, by identity, so a
+    // dio claim that ends untaken can learn whether its request came past here anyway.
+    if (claim is! InnerPassClaim) {
+      MockkHttpCore.noteUnclaimedBeneath(method, url);
+    }
     final request = await _inner.openUrl(method, url);
-    return _MockkHttpClientRequest(request, _core);
+    return _MockkHttpClientRequest(request, _core,
+        passNonce: claim is InnerPassClaim ? claim.nonce : null);
   }
 
   @override
   Future<HttpClientRequest> open(
       String method, String host, int port, String path) {
-    return openUrl(method, Uri(scheme: 'http', host: host, port: port, path: path));
+    return openUrl(
+        method, Uri(scheme: 'http', host: host, port: port, path: path));
   }
 
   @override
@@ -118,8 +141,7 @@ class _MockkHttpClient implements HttpClient {
   @override
   int? get maxConnectionsPerHost => _inner.maxConnectionsPerHost;
   @override
-  set maxConnectionsPerHost(int? value) =>
-      _inner.maxConnectionsPerHost = value;
+  set maxConnectionsPerHost(int? value) => _inner.maxConnectionsPerHost = value;
 
   @override
   String? get userAgent => _inner.userAgent;
@@ -182,7 +204,11 @@ class _MockkHttpClientRequest implements HttpClientRequest {
   final BytesBuilder _requestBody = BytesBuilder(copy: false);
   bool _requestBodyTooLarge = false;
 
-  _MockkHttpClientRequest(this._inner, this._core);
+  _MockkHttpClientRequest(this._inner, this._core, {String? passNonce})
+      : _passNonce = passNonce;
+
+  /// The outer layer's claim on this request, if a dio interceptor above made one.
+  final String? _passNonce;
 
   void _captureRequestBytes(List<int> data) {
     if (!MockkHttpCore.isEnabled || _requestBodyTooLarge) return;
@@ -210,24 +236,43 @@ class _MockkHttpClientRequest implements HttpClientRequest {
     final method = _inner.method;
     final uri = _inner.uri;
 
-    // Skip if disabled or duplicate
-    if (!MockkHttpCore.isEnabled ||
-        _core.isDuplicateRequest(method, uri)) {
-      return _inner.close();
-    }
+    if (!MockkHttpCore.isEnabled) return _inner.close();
+
+    // A dio interceptor above this client already captured this request and handed us its
+    // claim: let this pass through untouched. Anything else — package:http, a plain HttpClient,
+    // a second genuine request to the same URL — carries no nonce we know and is ours to capture.
+    final nonce = _passNonce;
+    if (nonce != null && _core.consumeInnerPass(nonce)) return _inner.close();
 
     // Check plugin connectivity — if not connected, pass through cleanly
     final connected = await _core.client.isPluginConnected();
     if (!connected) {
-      _core.markRequestCompleted(method, uri);
       return _inner.close();
     }
 
-    // Build request data for plugin
     final requestHeaders = <String, String>{};
     _inner.headers.forEach((name, values) {
       requestHeaders[name] = values.join(', ');
     });
+
+    // Ask the plugin what it wants BEFORE serialising the request body. The mock
+    // check is matched on method + URL only (the plugin never reads this body, and
+    // the native Android client has always sent it empty), while decoding a captured
+    // body is up to 5 MB of work — wasted entirely when the answer is IDLE.
+    final mockCheck = await _core.client.checkForMock(
+      _core.buildRequestData(method, uri, requestHeaders),
+      packageName: _core.packageName,
+      projectId: _core.projectId,
+    );
+    final pluginMode = MockkHttpCore.modeOf(mockCheck);
+
+    if (pluginMode == MockkHttpCore.modeIdle) {
+      // Nobody is capturing. Hand back the real response object untouched: no body
+      // buffering, no flow, no second socket — and no synthetic response wrapper,
+      // so streaming consumers keep streaming.
+      return _inner.close();
+    }
+
     final requestData = _core.buildRequestData(
       method,
       uri,
@@ -235,18 +280,10 @@ class _MockkHttpClientRequest implements HttpClientRequest {
       body: _serializeRequestBody(),
     );
 
-    // Check for mock
-    final mockCheck = await _core.client.checkForMock(
-      requestData,
-      packageName: _core.packageName,
-      projectId: _core.projectId,
-    );
-    final pluginMode = mockCheck?.mode ?? 'RECORDING';
-
     final startTime = DateTime.now().millisecondsSinceEpoch;
 
     switch (pluginMode) {
-      case 'MOCKK':
+      case MockkHttpCore.modeMockk:
         _BufferedResponse buffered;
         if (mockCheck?.hasMock == true) {
           buffered = _BufferedResponse.fromMock(mockCheck!);
@@ -264,7 +301,6 @@ class _MockkHttpClientRequest implements HttpClientRequest {
           durationMs: duration,
         );
         _core.client.sendFlowAsync(flow);
-        _core.markRequestCompleted(method, uri);
 
         return _MockkHttpClientResponse(
           statusCode: buffered.statusCode,
@@ -273,8 +309,8 @@ class _MockkHttpClientRequest implements HttpClientRequest {
           originalResponse: buffered.original,
         );
 
-      case 'DEBUG':
-      case 'MOCKK_DEBUG':
+      case MockkHttpCore.modeDebug:
+      case MockkHttpCore.modeMockkDebug:
         _BufferedResponse buffered;
         if (mockCheck?.hasMock == true) {
           buffered = _BufferedResponse.fromMock(mockCheck!);
@@ -293,7 +329,6 @@ class _MockkHttpClientRequest implements HttpClientRequest {
 
         // Send and WAIT for user modification
         final modified = await _core.client.sendFlowAndWait(flow);
-        _core.markRequestCompleted(method, uri);
 
         if (modified != null && modified.hasModifications) {
           return _MockkHttpClientResponse(
@@ -312,8 +347,11 @@ class _MockkHttpClientRequest implements HttpClientRequest {
           originalResponse: buffered.original,
         );
 
-      case 'RECORDING':
+      case MockkHttpCore.modeRecording:
       default:
+        // An unknown mode lands here too: a plugin newer than this package can only
+        // be honoured as far as this version understands it, and capturing is the
+        // safe reading once the plugin has told us it is NOT idle.
         // Buffer the response so we can read it AND return it
         final buffered = await _bufferResponse(await _inner.close());
         final duration = DateTime.now().millisecondsSinceEpoch - startTime;
@@ -328,7 +366,6 @@ class _MockkHttpClientRequest implements HttpClientRequest {
 
         // Send async — don't block the request
         _core.client.sendFlowAsync(flow);
-        _core.markRequestCompleted(method, uri);
 
         // Return a NEW response with the buffered bytes
         return _MockkHttpClientResponse(
@@ -519,8 +556,8 @@ class _MockkHttpClientResponse extends Stream<List<int>>
     bool? cancelOnError,
   }) {
     // Return a fresh stream from the buffered bytes — safe to listen multiple times
-    return Stream.value(_bodyBytes)
-        .listen(onData, onError: onError, onDone: onDone, cancelOnError: cancelOnError);
+    return Stream.value(_bodyBytes).listen(onData,
+        onError: onError, onDone: onDone, cancelOnError: cancelOnError);
   }
 
   @override
@@ -592,8 +629,7 @@ class _SyntheticHttpHeaders implements HttpHeaders {
   }
 
   @override
-  String? value(String name) =>
-      _headers[name.toLowerCase()] ?? _headers[name];
+  String? value(String name) => _headers[name.toLowerCase()] ?? _headers[name];
 
   @override
   void forEach(void Function(String name, List<String> values) action) {

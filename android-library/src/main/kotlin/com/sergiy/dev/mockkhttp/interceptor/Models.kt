@@ -11,7 +11,27 @@ data class FlowData(
     val timestamp: Long,
     val duration: Long,
     val projectId: String? = null,      // Optional: helps route to correct project
-    val packageName: String? = null     // Optional: app package name for routing
+    val packageName: String? = null,    // Optional: app package name for routing
+    val client: ClientReport? = null    // What this library says about itself (1.8.0+)
+)
+
+/**
+ * What the interceptor tells the plugin about itself with every message: library, version,
+ * platform, how it avoids double capture, and its counters. The plugin (1.8.0+) shows the latest
+ * report as `client` on `status` and on the flow listing, so "one request, one flow" can be
+ * checked from outside. Older plugins ignore the field.
+ */
+data class ClientReport(
+    val library: String,
+    val version: String,
+    val platform: String,
+    @com.google.gson.annotations.SerializedName("run_id") val runId: String,
+    @com.google.gson.annotations.SerializedName("started_at") val startedAt: Long,
+    /** Increases with every report built: the plugin keeps the highest per run, so a message overtaken on the wire never rolls the counters back. */
+    val seq: Long,
+    val dedup: Map<String, Any?>,
+    val caps: List<String>,
+    val stats: Map<String, Long>
 )
 
 /**
@@ -57,7 +77,8 @@ data class MockCheckRequest(
     val type: String = "CHECK_MOCK",  // Message type identifier
     val request: RequestData,
     val projectId: String? = null,
-    val packageName: String? = null
+    val packageName: String? = null,
+    val client: ClientReport? = null
 )
 
 /**

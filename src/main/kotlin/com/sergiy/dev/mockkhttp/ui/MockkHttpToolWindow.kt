@@ -1,5 +1,6 @@
 package com.sergiy.dev.mockkhttp.ui
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBTabbedPane
 import com.sergiy.dev.mockkhttp.logging.MockkHttpLogger
@@ -8,9 +9,13 @@ import javax.swing.JPanel
 
 /**
  * Main Tool Window content for MockkHttp plugin.
- * Contains tabs for Controls and Logs.
+ * Contains tabs for Inspector, Mockk, Logs, Agent, Settings and Help.
  */
-class MockkHttpToolWindow(project: Project) : JPanel(BorderLayout()) {
+class MockkHttpToolWindow(
+    project: Project,
+    /** Scoped to the tool window, so anything registered against it dies on a plugin unload. */
+    parentDisposable: Disposable
+) : JPanel(BorderLayout()) {
 
     private val logger = MockkHttpLogger.getInstance(project)
     private val tabbedPane: JBTabbedPane
@@ -51,9 +56,10 @@ class MockkHttpToolWindow(project: Project) : JPanel(BorderLayout()) {
             throw e
         }
 
+
         // Add Settings tab
         try {
-            val settingsPanel = SettingsPanel(project)
+            val settingsPanel = SettingsPanel(project, parentDisposable)
             tabbedPane.addTab("Settings", settingsPanel)
             logger.debug("Settings panel added successfully")
         } catch (e: Exception) {

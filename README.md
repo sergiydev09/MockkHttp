@@ -10,7 +10,7 @@ Intercept, debug and mock HTTP/HTTPS traffic from Android and Flutter apps (Andr
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-IntelliJ-orange.svg)](https://www.jetbrains.com/idea/)
-[![Version](https://img.shields.io/badge/version-1.7.1-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.8.0-green.svg)]()
 [![Gradle Plugin](https://img.shields.io/badge/Gradle%20Plugin-io.github.sergiydev09.mockkhttp-blue)](https://plugins.gradle.org/plugin/io.github.sergiydev09.mockkhttp)
 [![pub.dev](https://img.shields.io/pub/v/mockk_http.svg?label=mockk_http)](https://pub.dev/packages/mockk_http)
 
@@ -31,6 +31,7 @@ Intercept, debug and mock HTTP/HTTPS traffic from Android and Flutter apps (Andr
 - **🔒 Debug-Only**: Automatically excluded from release builds (multiple security layers)
 - **💉 Automatic Injection**: Gradle plugin injects interceptor via bytecode transformation
 - **🖥️ Cross-Platform IDE**: Works on macOS (Intel & Apple Silicon), Windows, and Linux
+- **🤖 AI Agent Access (MCP)**: Claude Code (or any MCP client) can read captured traffic, create and explain mock rules, and drive the capture session through a bundled, loopback-only bridge — see [AI Agent Access](#-ai-agent-access-claude-code--mcp)
 
 ---
 
@@ -59,7 +60,7 @@ Intercept, debug and mock HTTP/HTTPS traffic from Android and Flutter apps (Andr
 git clone https://github.com/sergiydev09/MockkHttp.git
 cd MockkHttp
 ./gradlew buildPlugin
-# Install build/distributions/MockkHttp-1.7.1.zip via Settings > Plugins > Install from Disk
+# Install build/distributions/MockkHttp-1.8.0.zip via Settings > Plugins > Install from Disk
 ```
 
 ### Step 2 (Android): Add Gradle Plugin to Your App
@@ -87,7 +88,7 @@ In your app's `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  mockk_http: ^1.7.1
+  mockk_http: ^1.8.0
 ```
 
 Then initialize it before running the app:
@@ -101,7 +102,7 @@ void main() {
 }
 ```
 
-Using [dio](https://pub.dev/packages/dio)? Add the interceptor instead: `dio.interceptors.add(MockkHttpDioInterceptor())`.
+Using [dio](https://pub.dev/packages/dio)? Add the interceptor as well: `dio.interceptors.add(MockkHttpDioInterceptor(dio: dio))`.
 See the [mockk_http README](flutter-package/README.md) for iOS Simulator (zero config), physical devices and debug-only setup.
 
 ---
@@ -122,6 +123,43 @@ See the [mockk_http README](flutter-package/README.md) for iOS Simulator (zero c
 ### 3. Use Your App
 
 Make network requests in your app and see them appear in the MockkHttp window!
+
+---
+
+## 🤖 AI Agent Access (Claude Code / MCP)
+
+Since 1.8.0 an AI coding agent can drive MockkHttp the way you do from the tool window: read what the app called, create a mock rule from a captured flow, switch the session to Mockk mode, wait for the next request that matches a pattern, and ask why a rule did or did not fire.
+
+### Setup (once per project)
+
+1. Open **MockkHttp → Settings → AI Agent Access** and leave access on **Full** (or pick **Read-only**).
+2. Click **Write .mcp.json into the project root**. The entry is merged into an existing `.mcp.json` (other servers are kept, invalid JSON is refused rather than overwritten, `.gitignore` is never touched). It contains no port, token or project id, so it is safe to commit.
+3. Start `claude` in the project directory. The bridge discovers the running IDE, its port and its token from `~/.mockkhttp/instances/` on every call, so an IDE restart needs no configuration change.
+
+There are no prerequisites: the bridge is a jar shipped inside the plugin, copied to `~/.mockkhttp/bin` on every IDE start and launched with the IDE's own JBR. No Node, no npm, no `JAVA_HOME`.
+
+### What the agent gets
+
+| Tool | What it does |
+|------|--------------|
+| `mockkhttp_status` | Which project, session, mode and device the agent is looking at, plus warnings that name the next call |
+| `mockkhttp_flows` | List, filter and read captured flows (headers and bodies); clear the journal |
+| `mockkhttp_await_flow` | Block until a request matching a pattern arrives — no polling, no sleeping |
+| `mockkhttp_mocks` | Create, update, enable, delete, export and import mock rules and collections; build a rule from a captured flow with `from_flow_id` |
+| `mockkhttp_match_explain` | Explain, rule by rule, why a request would or would not be mocked |
+| `mockkhttp_session` | Start, stop and restart capture, choose the app, list devices, change the mode |
+| `mockkhttp_docs` | Ten topics written for a model: quickstart, modes, mocking, matching, flows, automated_test, … |
+
+The same API is available over plain HTTP for scripts: `GET http://127.0.0.1:<port>/v1/docs` — the port and bearer token are in `~/.mockkhttp/instances/<id>.json`, and every request must carry an `X-MockkHttp-Client` header.
+
+### Security model
+
+- The control plane listens on `127.0.0.1` only, on a port the OS picks, behind a bearer token that rotates on every IDE start (and on **Revoke**). Nothing on your network can reach it, and no setting opens it up.
+- **Off** closes the port and deletes the discovery file; **Read-only** serves reads and refuses every change with 403.
+- Captured credentials (`Authorization`, `Cookie`, API keys) are returned as `<redacted:Nb>` with their true length. **Allow an agent to read redacted header values** is off by default, resets on every IDE restart, and every answer that reveals a credential says so in a warning.
+- Every call an agent makes is listed in the Inspector next to the traffic your app produced.
+
+Not yet available to agents (reported as `not_implemented_yet` by `mockkhttp_status`): answering Debug-mode pauses, assertion "arms" and test runs, launching the app under test.
 
 ---
 

@@ -2,7 +2,7 @@
 // Usage: dart tool/test_plist.dart <path-to-Info.plist>
 import 'dart:io';
 
-import '../lib/src/ios_bundle_info.dart';
+import 'package:mockk_http/src/ios_bundle_info.dart';
 
 void main(List<String> args) {
   final bytes = File(args.first).readAsBytesSync();

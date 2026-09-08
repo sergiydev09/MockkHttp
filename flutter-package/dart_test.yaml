@@ -1,0 +1,5 @@
+tags:
+  # One test holds a request for 31 s on purpose: it is the only way to fail against the
+  # 30 s claim sweep that used to exist. Skip it with `dart test -x slow`.
+  slow:
+    timeout: 2m

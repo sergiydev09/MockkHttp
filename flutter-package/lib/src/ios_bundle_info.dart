@@ -29,7 +29,8 @@ String? bundleIdFromPlistBytes(Uint8List bytes) {
       bytes[2] == 0x6C && // l
       bytes[3] == 0x69 && // i
       bytes[4] == 0x73 && // s
-      bytes[5] == 0x74) { // t
+      bytes[5] == 0x74) {
+    // t
     return _fromBinaryPlist(bytes);
   }
   return _fromXmlPlist(utf8.decode(bytes, allowMalformed: true));
@@ -57,11 +58,14 @@ String? _fromBinaryPlist(Uint8List bytes) {
     final topObject = _readBE(bytes, trailer + 16, 8);
     final offsetTableStart = _readBE(bytes, trailer + 24, 8);
 
-    if (offsetIntSize == 0 || objectRefSize == 0 || numObjects == 0) return null;
+    if (offsetIntSize == 0 || objectRefSize == 0 || numObjects == 0) {
+      return null;
+    }
 
     int objectOffset(int ref) {
       if (ref >= numObjects) return -1;
-      return _readBE(bytes, offsetTableStart + ref * offsetIntSize, offsetIntSize);
+      return _readBE(
+          bytes, offsetTableStart + ref * offsetIntSize, offsetIntSize);
     }
 
     // Top object must be a dict (marker high nibble 0xD)
@@ -70,7 +74,8 @@ String? _fromBinaryPlist(Uint8List bytes) {
 
     final (count, refsStart) = _readLength(bytes, topOffset);
     for (var i = 0; i < count; i++) {
-      final keyRef = _readBE(bytes, refsStart + i * objectRefSize, objectRefSize);
+      final keyRef =
+          _readBE(bytes, refsStart + i * objectRefSize, objectRefSize);
       final key = _readStringObject(bytes, objectOffset(keyRef));
       if (key == 'CFBundleIdentifier') {
         final valueRef = _readBE(

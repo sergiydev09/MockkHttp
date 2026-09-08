@@ -44,11 +44,63 @@ class MockkHttpInterceptor @JvmOverloads constructor(
 
     companion object {
         private const val TAG = "MockkHttpInterceptor"
+
+        /**
+         * Mode the plugin reports when NO capture session owns this app's traffic —
+         * nobody pressed Start, or a running session's package filter excludes us.
+         *
+         * It is also the fallback when the plugin answers without naming a mode. That
+         * used to be "RECORDING": an idle IDE therefore cost every single request a
+         * full response body read plus a second socket to ship a flow the plugin then
+         * discarded. Assuming IDLE when we do not know is the cheap reading of the same
+         * uncertainty, and the very next request asks again.
+         */
+        const val MODE_IDLE = "IDLE"
+
+        /**
+         * Reported to the plugin in every message. Keep equal to the `version` in
+         * android-library/build.gradle.kts when the AAR is published.
+         */
+        const val LIBRARY_VERSION = "1.8.0"
+
+        // ── the numbers ──
+        // Nothing here drops a request any more; these exist so that "one request, one flow"
+        // can be checked from outside. Sent with every message, shown by the plugin as `client`.
+        private val flowsSent = java.util.concurrent.atomic.AtomicLong(0)
+        private val passesYielded = java.util.concurrent.atomic.AtomicLong(0)
+
+        /** New on every process start, so a reader can tell a restart from silence. */
+        private val runId: String = java.util.UUID.randomUUID().toString().take(8)
+        private val startedAt: Long = System.currentTimeMillis()
+
+        /** What this library says about itself; attached to every CHECK_MOCK and FLOW. */
+        @JvmStatic
+        private val reportSeq = java.util.concurrent.atomic.AtomicLong()
+
+        fun clientReport(): ClientReport = ClientReport(
+            library = "android-okhttp",
+            version = LIBRARY_VERSION,
+            platform = "Android",
+            runId = runId,
+            startedAt = startedAt,
+            seq = reportSeq.incrementAndGet(),
+            dedup = mapOf("enabled" to enableDeduplication, "window_ms" to 0, "controllable" to false),
+            caps = listOf("identityTag", "idle"),
+            stats = mapOf(
+                "flows_sent" to flowsSent.get(),
+                "passes_yielded" to passesYielded.get()
+            )
+        )
+
+        /** Test seam: zero the counters. */
+        internal fun resetStatsForTests() {
+            flowsSent.set(0)
+            passesYielded.set(0)
+        }
         private const val CONNECTION_TIMEOUT_MS = 5000
         private const val READ_TIMEOUT_MS = 60000  // 60s for user to modify
         private const val PING_TIMEOUT_MS = 500    // Fast ping timeout
         private const val PING_CACHE_DURATION_MS = 5000  // Cache ping result for 5s
-        private const val DEDUP_WINDOW_MS = 500  // 500ms window to detect duplicate requests
         private const val MAX_REQUEST_BODY_SIZE = 5L * 1024 * 1024  // 5MB cap, mirrors the response cap
 
         /**
@@ -66,10 +118,17 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         var debugMode = true
 
         /**
-         * Enable/disable request deduplication.
-         * When enabled, requests with same method+URL within 500ms will only be captured once.
-         * This prevents duplicate flows from multiple OkHttpClient instances.
-         * Set to false to capture ALL requests (useful for detecting app-level duplicate calls).
+         * Whether a second copy of this interceptor in the same chain steps aside for a request the
+         * first copy already captured.
+         *
+         * Until 1.8 this was a 500 ms window keyed on method + URL: a second identical request
+         * inside it was dropped inside the app — never captured, never mockable, with no counter
+         * anywhere. Two screens asking for the same forecast 12 ms apart is normal app behaviour,
+         * and so is an immediate retry, which is exactly what `await_flow count:2` exists to
+         * observe. What the window was really for is ONE request seen by TWO copies of this
+         * interceptor (a builder built twice, a client derived with `newBuilder()`, a manual add
+         * next to the injected one). That is a question of identity, not of time, so it is now
+         * answered with a tag on the request itself — see [Captured]. Off, every copy captures.
          */
         @JvmStatic
         var enableDeduplication = true
@@ -83,75 +142,28 @@ class MockkHttpInterceptor @JvmOverloads constructor(
         private var failedAttempts: Int = 0
         private const val MAX_FAILED_ATTEMPTS = 3  // After 3 fails, stop trying
 
-        // Request deduplication: Track active requests to prevent duplicates from multiple OkHttp clients
-        private val activeRequests = java.util.concurrent.ConcurrentHashMap<String, Long>()
-        @Volatile
-        private var lastCleanupTime: Long = 0
-        private const val CLEANUP_INTERVAL_MS = 10000  // Cleanup old entries every 10s
-
         /**
-         * Check if this request is already being captured by another OkHttpClient instance.
-         * Returns true if this is a duplicate within the deduplication window.
+         * Add the interceptor to [builder] unless it already carries one, and return [builder].
+         *
+         * This is what the Gradle plugin's bytecode transform calls in front of every
+         * `OkHttpClient.Builder.build()`. Before it, every `build()` gained a fresh copy: a builder
+         * built twice, or one derived from an existing client with `newBuilder()`, ended up with
+         * two, and the same request was captured twice. Also the right call for a hand-written
+         * setup that may run more than once.
          */
-        private fun isDuplicateRequest(request: Request): Boolean {
-            if (!enableDeduplication) return false
-
-            val now = System.currentTimeMillis()
-
-            // Periodic cleanup of old entries to prevent memory leak
-            if (now - lastCleanupTime > CLEANUP_INTERVAL_MS) {
-                cleanupOldRequests(now)
-                lastCleanupTime = now
+        @JvmStatic
+        fun install(builder: OkHttpClient.Builder): OkHttpClient.Builder {
+            if (builder.interceptors().none { it is MockkHttpInterceptor }) {
+                builder.addInterceptor(MockkHttpInterceptor(null))
             }
-
-            // Create key: method + URL (ignore query params differences for dedup)
-            val key = "${request.method}:${request.url.toUrl().run { "$protocol://$host$path" }}"
-
-            // Try to register this request
-            val existingTimestamp = activeRequests.putIfAbsent(key, now)
-
-            if (existingTimestamp != null) {
-                // Request already exists, check if within dedup window
-                val timeSinceFirst = now - existingTimestamp
-                if (timeSinceFirst < DEDUP_WINDOW_MS) {
-                    // Duplicate detected within window
-                    Log.d(TAG, "🔄 Duplicate request detected (${timeSinceFirst}ms ago): ${request.method} ${request.url}")
-                    return true
-                } else {
-                    // Outside window, update timestamp and allow
-                    activeRequests[key] = now
-                }
-            }
-
-            return false
+            return builder
         }
 
-        /**
-         * Mark a request as completed (for cleanup).
-         */
-        private fun markRequestCompleted(request: Request) {
-            if (!enableDeduplication) return
-
-            val key = "${request.method}:${request.url.toUrl().run { "$protocol://$host$path" }}"
-            activeRequests.remove(key)
-        }
-
-        /**
-         * Remove old entries from activeRequests map to prevent memory leak.
-         */
-        private fun cleanupOldRequests(now: Long) {
-            val iterator = activeRequests.entries.iterator()
-            var removed = 0
-            while (iterator.hasNext()) {
-                val entry = iterator.next()
-                if (now - entry.value > DEDUP_WINDOW_MS * 2) {
-                    iterator.remove()
-                    removed++
-                }
-            }
-            if (removed > 0) {
-                Log.d(TAG, "🧹 Cleaned up $removed old request entries")
-            }
+        /** Test seam: the ping cache is static, so one test's answer would otherwise leak into the next. */
+        internal fun resetConnectionStateForTests() {
+            lastPingTime = 0
+            lastPingResult = false
+            failedAttempts = 0
         }
 
         /**
@@ -169,15 +181,21 @@ class MockkHttpInterceptor @JvmOverloads constructor(
          * Detect if running on an Android emulator vs a physical device.
          */
         private fun isRunningOnEmulator(): Boolean {
-            return Build.FINGERPRINT.startsWith("generic") ||
-                    Build.FINGERPRINT.startsWith("unknown") ||
-                    Build.MODEL.contains("google_sdk") ||
-                    Build.MODEL.contains("Emulator") ||
-                    Build.MODEL.contains("Android SDK built for") ||
-                    Build.HARDWARE.contains("goldfish") ||
-                    Build.HARDWARE.contains("ranchu") ||
-                    Build.PRODUCT.contains("sdk") ||
-                    Build.PRODUCT.contains("emulator")
+            // Platform types: a device always fills these in, the android.jar stubs of a JVM unit
+            // test do not. Treating them as empty there costs nothing on a device.
+            val fingerprint = Build.FINGERPRINT ?: ""
+            val model = Build.MODEL ?: ""
+            val hardware = Build.HARDWARE ?: ""
+            val product = Build.PRODUCT ?: ""
+            return fingerprint.startsWith("generic") ||
+                    fingerprint.startsWith("unknown") ||
+                    model.contains("google_sdk") ||
+                    model.contains("Emulator") ||
+                    model.contains("Android SDK built for") ||
+                    hardware.contains("goldfish") ||
+                    hardware.contains("ranchu") ||
+                    product.contains("sdk") ||
+                    product.contains("emulator")
         }
 
         /**
@@ -194,6 +212,13 @@ class MockkHttpInterceptor @JvmOverloads constructor(
             }
         }
     }
+
+    /**
+     * The tag this interceptor leaves on a request it has captured, so a second copy of itself
+     * further down the same chain lets that request through. Typed tags are invisible to the app:
+     * `Request.tag()` without a class still returns whatever the app set.
+     */
+    object Captured
 
     override fun intercept(chain: Interceptor.Chain): Response {
         // SECURITY: Double-check we're not in a release build
@@ -215,35 +240,45 @@ class MockkHttpInterceptor @JvmOverloads constructor(
             return chain.proceed(chain.request())
         }
 
-        val request = chain.request()
+        val original = chain.request()
         val startTime = System.currentTimeMillis()
 
-        // Check if this is a duplicate request from another OkHttpClient instance
-        if (isDuplicateRequest(request)) {
-            // Skip capturing, another client already captured this request
-            return chain.proceed(request)
+        // Another copy of this interceptor earlier in the chain has already captured this request
+        // and tagged it. Identity, not a clock: a second, genuine request to the same URL carries
+        // no tag and is captured on its own, however close behind it comes.
+        if (enableDeduplication && original.tag(Captured::class.java) != null) {
+            passesYielded.incrementAndGet()
+            return chain.proceed(original)
         }
 
         // Check if plugin is connected
         if (!isPluginConnected()) {
-            markRequestCompleted(request)
-            return chain.proceed(request)
+            return chain.proceed(original)
         }
+
+        // From here on this copy owns the capture: every copy after it sees the tag.
+        val request = original.newBuilder().tag(Captured::class.java, Captured).build()
 
         // STEP 1: Check plugin mode and mock availability
         val mockCheckResponse = checkForMock(request)
-        val pluginMode = mockCheckResponse?.mode ?: "RECORDING"
+        val pluginMode = mockCheckResponse?.mode ?: MODE_IDLE
 
         Log.d(TAG, "🎯 Plugin mode: $pluginMode, Has mock: ${mockCheckResponse?.hasMock ?: false}")
 
         // STEP 2: Decide flow based on mode
         return when (pluginMode) {
+            MODE_IDLE -> {
+                // Nothing is listening: capturing would read the whole response body and open a
+                // second socket for a flow the plugin drops on arrival. Pass through untouched.
+                val response = chain.proceed(request)
+                response
+            }
+
             "RECORDING" -> {
                 // RECORDING: Make real call, send async, don't block
                 val response = chain.proceed(request)
                 val duration = System.currentTimeMillis() - startTime
                 sendToPluginAsync(request, response, duration)
-                markRequestCompleted(request)
                 response
             }
 
@@ -263,7 +298,6 @@ class MockkHttpInterceptor @JvmOverloads constructor(
 
                 // ALWAYS show dialog in DEBUG mode
                 val modifiedResponse = sendToPluginAndWait(request, response, duration) ?: response
-                markRequestCompleted(request)
                 modifiedResponse
             }
 
@@ -279,7 +313,6 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                 }
                 val duration = System.currentTimeMillis() - startTime
                 sendToPluginAsync(request, response, duration)
-                markRequestCompleted(request)
                 response
             }
 
@@ -299,7 +332,6 @@ class MockkHttpInterceptor @JvmOverloads constructor(
 
                 // ALWAYS show dialog in MOCKK_DEBUG mode
                 val modifiedResponse = sendToPluginAndWait(request, response, duration) ?: response
-                markRequestCompleted(request)
                 modifiedResponse
             }
 
@@ -307,7 +339,6 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                 // Unknown mode, fallback to simple pass-through
                 Log.w(TAG, "Unknown mode: $pluginMode, using pass-through")
                 val response = chain.proceed(request)
-                markRequestCompleted(request)
                 response
             }
         }
@@ -448,6 +479,7 @@ class MockkHttpInterceptor @JvmOverloads constructor(
                 // Create mock check request (no response data, just request info)
                 val mockCheckRequest = MockCheckRequest(
                     type = "CHECK_MOCK",
+                    client = clientReport(),
                     request = RequestData(
                         method = request.method,
                         url = request.url.toString(),
@@ -631,7 +663,9 @@ class MockkHttpInterceptor @JvmOverloads constructor(
             ""
         }
 
+        flowsSent.incrementAndGet()
         return FlowData(
+            client = clientReport(),
             flowId = java.util.UUID.randomUUID().toString(),
             request = RequestData(
                 method = request.method,

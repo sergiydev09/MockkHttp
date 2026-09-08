@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.7.1"
+version = "1.8.0"
 
 repositories {
     mavenCentral()
@@ -38,6 +38,11 @@ dependencies {
     // They are bundled with the IntelliJ Platform and adding them explicitly causes
     // version conflicts / runtime errors flagged by verifyPluginProjectConfiguration.
     // See: https://jb.gg/intellij-platform-kotlin-coroutines
+
+    // JUnit 4, and only JUnit 4: the platform test framework declared above is JUnit 3/4 based
+    // (BasePlatformTestCase -> UsefulTestCase -> junit.framework.TestCase), so a JUnit 5 engine
+    // would collect none of those classes and still report a green build.
+    testImplementation("junit:junit:4.13.2")
 }
 
 intellijPlatform {
@@ -64,6 +69,54 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>1.8.0 — Drive MockkHttp from an AI agent (Claude Code / MCP)</h3>
+            <p>Everything the tool window can do is now available to an AI coding agent, through a local control plane
+                and a bundled MCP bridge. The agent sees the same flows and rules you do, and every call it makes is
+                listed in the Inspector next to your app's traffic.</p>
+            <ul>
+                <li><strong>🤖 Agent control plane.</strong> A REST API on <code>127.0.0.1</code> only (port picked by the OS,
+                    bearer token, never reachable from the network) exposes status, captured flows (list, get, and a
+                    long-poll <code>await</code>), mock rules and collections (full CRUD, <code>explain</code> why a request
+                    did or did not match, export/import with dry-run), capture session start/stop/restart, the package
+                    filter, device listing and mode changes.</li>
+                <li><strong>🧩 MCP bridge with zero prerequisites.</strong> A stdio MCP server ships inside the plugin, is
+                    copied to <code>~/.mockkhttp/bin</code> on every start and runs on the IDE's own JBR — no Node, no npm,
+                    no JAVA_HOME. Seven tools: <code>mockkhttp_status</code>, <code>mockkhttp_flows</code>,
+                    <code>mockkhttp_await_flow</code>, <code>mockkhttp_mocks</code>, <code>mockkhttp_match_explain</code>,
+                    <code>mockkhttp_session</code>, <code>mockkhttp_docs</code>. Settings → <em>Write .mcp.json into the
+                    project root</em> merges the entry into your project's <code>.mcp.json</code> (never overwrites, never
+                    touches .gitignore); the entry carries no port, token or project id, so it is safe to commit.</li>
+                <li><strong>🔒 Safe by default.</strong> Access is Full / Read-only / Off in Settings, and Off closes the port
+                    outright. Captured credentials (Authorization, Cookie, API keys) come back as
+                    <code>&lt;redacted:Nb&gt;</code> unless you arm <em>Allow an agent to read redacted header values</em> —
+                    which resets on every IDE restart, and every answer that reveals one says so in a warning.</li>
+                <li><strong>🧠 Errors that name the next call.</strong> Every refusal carries the exact call that fixes it, and
+                    the bridge rewrites REST routes into MCP tool calls on errors and successes alike.
+                    <code>mockkhttp_docs</code> serves ten topics (quickstart, modes, mocking, matching, flows,
+                    automated_test, …) written for a model to act on.</li>
+                <li><strong>💤 An idle IDE costs the app nothing.</strong> With no capture session running, port 9876 is
+                    closed and any client that still asks is told <code>IDLE</code>, so the app stops buffering response
+                    bodies and shipping flows nobody reads. Older clients keep their previous behaviour.</li>
+                <li><strong>🐦 Flutter — <code>mockk_http</code> 1.8.0.</strong> Honours IDLE; request bodies are no longer
+                    serialised before the plugin has asked for them; two requests started in the same millisecond no longer
+                    share a flow id (which broke flow lookups and <code>from_flow_id</code>); and identical requests are no
+                    longer dropped: the 500&nbsp;ms deduplication window silently discarded a genuine second request to the
+                    same URL — two screens loading the same data, an immediate retry — so the log was missing calls the app
+                    really made. The two capture layers now coordinate by request identity instead, and every request the
+                    app makes is a flow. (The native Android interceptor, unchanged at 1.6.1, keeps its window; set
+                    <code>MockkHttpInterceptor.enableDeduplication = false</code> when a test depends on fast identical retries.)</li>
+                <li><strong>📊 The client reports its own numbers.</strong> <code>mockk_http</code> 1.8.0 sends its
+                    library, version, platform and counters (flows sent by layer, passes one layer yielded to the
+                    other, claims made and withdrawn) with every message; <code>status</code> and the flow listing
+                    expose the latest as <code>client</code>, so an agent can check from outside that one request is
+                    one flow instead of trusting it.</li>
+                <li><strong>🧪 A real test suite.</strong> 205 tests across the plugin and the bridge (plus 31 in the Flutter package), with a build guard that
+                    fails when the suite is empty or silently skipped.</li>
+            </ul>
+            <p>Not in this release, and reported as <code>not_implemented_yet</code> by <code>status</code>: arms/runs/verify,
+                agent-driven Debug pauses, launching the app under test. Gradle plugin and Android library are unchanged
+                at 1.6.1.</p>
+
             <h3>1.7.1 — Correctness release</h3>
             <p>No new features: fifteen bugs, several of which lost data silently.</p>
             <ul>
@@ -354,7 +407,114 @@ tasks {
         sourceCompatibility = "21"
         targetCompatibility = "21"
     }
+
+    // The IntelliJ Platform Gradle Plugin already preconfigures `test` with the platform classpath,
+    // the test sandbox and the system properties the framework needs. Everything below is only what
+    // it leaves to the project.
+    test {
+        // Explicit, because getting it wrong is silent: the platform test classes are JUnit 3/4,
+        // and useJUnitPlatform() here would run ZERO of them while still exiting successfully.
+        useJUnit()
+
+        // Loading the IntelliJ Platform into the test JVM does not fit Gradle's 512 MB default.
+        maxHeapSize = "2g"
+
+        // The fixtures build Swing components; a CI machine with no display needs this before the
+        // AWT toolkit is touched, which happens long before any test body runs.
+        systemProperty("java.awt.headless", "true")
+
+        // The test IDE publishes an agent-discovery file with a live bearer token, and prunes its
+        // peers. Neither may touch the developer's real ~/.mockkhttp (audit round 11, AR): every
+        // path the agent channel writes is rooted here instead, for the whole JVM — including
+        // refreshes that run after a test has already restored what it changed.
+        systemProperty("mockkhttp.home", layout.buildDirectory.dir("mockkhttp-test-home").get().asFile.absolutePath)
+
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStackTraces = true
+        }
+
+        // Second half of the zero-test guard: the task ran, but executed nothing — a misconfigured
+        // engine (useJUnitPlatform() against JUnit 4 tests) looks exactly like this and still exits 0.
+        var executedTests = 0
+        afterTest(closureOf<Any> { executedTests++ })
+        doLast {
+            if (executedTests == 0) {
+                throw GradleException(
+                    "The test task ran but executed ZERO tests — the JUnit engine is misconfigured. " +
+                            "A passing build that verified nothing is not a pass."
+                )
+            }
+        }
+    }
 }
+
+/**
+ * Generates `MockkHttpBuild.kt` with the plugin version Gradle already knows.
+ *
+ * The alternative is asking the platform at runtime, and every entry point for that —
+ * `PluginManagerCore.getPlugin`, `PluginManager.getPluginByClass` — is marked
+ * `@ApiStatus.Internal`, which the Marketplace verifier reports. The version is a build-time fact,
+ * so baking it in is both simpler and immune to the platform reshuffling that API again.
+ */
+val generateBuildInfo by tasks.registering {
+    group = "build"
+    description = "Writes the plugin version into a generated Kotlin source file."
+
+    val pluginVersion = project.version.toString()
+    val outputDir = layout.buildDirectory.dir("generated/buildinfo")
+    inputs.property("pluginVersion", pluginVersion)
+    outputs.dir(outputDir)
+
+    doLast {
+        val target = outputDir.get().asFile.resolve("com/sergiy/dev/mockkhttp")
+        target.mkdirs()
+        target.resolve("MockkHttpBuild.kt").writeText(
+            """
+            package com.sergiy.dev.mockkhttp
+
+            // GENERATED by the `generateBuildInfo` Gradle task. Do not edit.
+            object MockkHttpBuild {
+                const val VERSION: String = "$pluginVersion"
+            }
+
+            """.trimIndent()
+        )
+    }
+}
+
+kotlin.sourceSets.main { kotlin.srcDir(generateBuildInfo) }
+
+/**
+ * First half of the zero-test guard, and the half that matters.
+ *
+ * With no test sources Gradle marks `:test` NO-SOURCE and skips it **entirely** — `doLast` never
+ * runs, and the build is green having verified nothing. That is not hypothetical here: this repo
+ * shipped for months with an empty `src/test` that was never in git, while stale classes from the
+ * build cache produced phantom "35 tests" results. A dependency of `test` still runs when `test`
+ * itself is skipped, which is what makes this catch the case the in-task check cannot.
+ */
+val verifyTestSourcesExist by tasks.registering {
+    group = "verification"
+    description = "Fails if the test source set is empty, which would silently skip the whole suite."
+
+    val testSources = sourceSets.test.get().allSource.matching { include("**/*.kt", "**/*.java") }
+    // Captured at configuration time so the check stays configuration-cache safe.
+    val fileCount = providers.provider { testSources.files.size }
+
+    doLast {
+        if (fileCount.get() == 0) {
+            throw GradleException(
+                "src/test contains no test sources, so `test` would be skipped as NO-SOURCE and the " +
+                        "build would pass without verifying anything. Restore the suite, or remove " +
+                        "this guard deliberately."
+            )
+        }
+    }
+}
+
+tasks.named("test") { dependsOn(verifyTestSourcesExist) }
 
 kotlin {
     compilerOptions {
@@ -369,4 +529,36 @@ sourceSets {
             srcDir("src/main/python")
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// MCP bridge (agent control plane — plan §6, decision D1-A)
+//
+// `:mcp-bridge` is a plain Kotlin/JVM module (Gson only, no IntelliJ Platform) that produces the
+// stdio JSON-RPC bridge Claude Code launches. The plugin ships it as a resource and BridgeVendor
+// copies it to ~/.mockkhttp/bin at runtime, so the jar MUST be rebuilt whenever the plugin is built:
+// a stale copy in src/main/resources would be published to the Marketplace unnoticed.
+//
+// The subproject's task is referenced by PATH, not by TaskProvider: the root project is configured
+// before :mcp-bridge, so project(":mcp-bridge").tasks would still be empty at this point.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+val vendorBridge by tasks.registering(Copy::class) {
+    group = "build"
+    description = "Builds the stdio MCP bridge fat jar and vendors it into the plugin resources."
+
+    dependsOn(":mcp-bridge:fatJar")
+
+    val bridgeJar = layout.projectDirectory.file("mcp-bridge/build/libs/mockkhttp-mcp.jar")
+    from(bridgeJar)
+    into(layout.projectDirectory.dir("src/main/resources/bridge"))
+
+    // A Copy whose source does not exist is silently NO-SOURCE. Declaring the jar as an input turns
+    // that into a loud failure instead of a plugin that ships without its bridge.
+    inputs.file(bridgeJar).withPropertyName("bridgeJar")
+}
+
+// processResources consumes src/main/resources, which is exactly where vendorBridge writes, so the
+// dependency has to be explicit or Gradle fails the build with an implicit-dependency error.
+tasks.named("processResources") {
+    dependsOn(vendorBridge)
 }

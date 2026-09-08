@@ -1,3 +1,54 @@
+## 1.8.0
+
+- **IDLE mode: nothing to pay while nobody is capturing.** The MockkHttp plugin 1.8.0 answers
+  `IDLE` when no capture session owns this app's traffic (nobody pressed Start, or the session's
+  package filter excludes the app). The package now passes such requests through untouched: no
+  response buffering, no flow, no second socket. Previously the fallback for "no mode" was
+  RECORDING, so an idle IDE cost every request a full body read plus a socket to ship a flow the
+  plugin dropped on arrival. Older plugins keep answering RECORDING and keep being recorded.
+- **Request bodies are serialised only once the plugin has asked for them.** The mock check is
+  matched on method + URL, so encoding up to 5 MB of payload before it was pure waste whenever the
+  answer turned out to be IDLE.
+- **Fix: two requests started in the same millisecond shared a flow id.** Both "random" halves of
+  the id came from the clock, so they were effectively constant. A duplicated id broke flow lookups
+  and `from_flow_id`, the documented way to turn a captured call into a mock rule. Ids now carry
+  real entropy.
+- **Fix: identical requests are no longer dropped.** The 500 ms deduplication window discarded
+  a genuine second request to the same URL — two screens asking for the same forecast, an
+  immediate retry — inside the app, with no trace anywhere: the plugin's log was missing
+  requests the app really made. The window existed for one request seen by two layers (a `dio`
+  interceptor on top of the global `HttpOverrides`), which is a question of identity, not of
+  time. Give the interceptor its Dio — `MockkHttpDioInterceptor(dio: dio)` — and it wraps the
+  Dio's adapter to hand the layer underneath a claim through a Dart zone; the request itself
+  goes down exactly as the app wrote it, on any adapter, and the inner layer steps aside for
+  exactly that request. Without `dio:` the interceptor stands back whenever the global override
+  is active. Two genuine requests are two flows. `MockkHttp.enableDeduplication = false` still
+  turns the coordination off entirely.
+- **The package reports its own numbers.** Every message to the plugin now carries `client`:
+  library, version, platform, how the two layers coordinate, and counters — flows sent (by
+  layer), claims made, passes yielded, claims withdrawn, times the dio interceptor stood back.
+  The plugin (1.8.0) shows the latest under `client` on `status` and on the flow listing, so
+  "one request, one flow" can be checked from outside instead of trusted. `run_id` and
+  `started_at` anchor the counters to the app run; `claims_not_carried`, `claims_untaken_beneath`,
+  `claims_not_fetched`, `wrapper_replaced` and `claims_evicted` make the remaining ways a request
+  could be counted twice visible instead of silent — by what the claim recorded, not by what the
+  adapter looks like afterwards. A request the mock answers makes no claim at all, and the one
+  warning the package prints is said when a request has actually lost its claim, not when an
+  adapter is merely replaced — and "actually" needs two witnesses: that `Dio`'s own adapter
+  replaced while the request was in flight, and the `dart:io` layer having seen the request go
+  past unclaimed (it remembers those; `beneath_witness_evicted` says if that memory overflowed).
+  Every report also carries a `seq`, so the plugin never lets a message overtaken on the wire
+  roll the counters back. When the adapter was replaced and nothing beneath matched, the package
+  says `claims_unresolved` rather than "nobody saw it" — a signing adapter that rewrites the URL
+  reports the request twice under a name the witness cannot match. `claims_pending` shows the
+  claims alive right now: a request a later interceptor answered with `handler.resolve(response)`
+  at its default flag never comes back to this layer (see the README), and this is where it shows.
+- **Fix: installing the overrides twice captured every request twice.** `MockkHttp.init()`
+  called from two places, or a test installing on top of an app that already did, wrapped one
+  `HttpClient` in two MockkHttp layers. A second install now replaces the first.
+- **Fix: a mocked answer served through the `dio` interceptor was reported twice.** The
+  interceptor sent the flow from `onRequest` and then again from its own `onResponse`.
+
 ## 1.7.1
 
 - **Fix: replies from the plugin were silently truncated.** The client read a reply with

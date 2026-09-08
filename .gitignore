@@ -50,3 +50,7 @@ CLAUDE.md
 ### Dart / Flutter ###
 .dart_tool/
 .packages
+
+# Vendored MCP bridge jar: a build output of :mcp-bridge, rebuilt on every build.
+# Committing it would put a 2 MB binary diff in every commit that touches the bridge.
+src/main/resources/bridge/

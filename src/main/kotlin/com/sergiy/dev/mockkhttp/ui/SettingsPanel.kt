@@ -1,5 +1,6 @@
 package com.sergiy.dev.mockkhttp.ui
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.fileChooser.FileChooserFactory
@@ -21,7 +22,15 @@ import javax.swing.border.TitledBorder
 /**
  * Settings panel for configuring plugin paths and options.
  */
-class SettingsPanel(private val project: Project) : JPanel(BorderLayout()) {
+class SettingsPanel(
+    private val project: Project,
+    /**
+     * Scoped to the tool window, NOT to the project — [AgentSettingsSection] parents its repeating
+     * refresh timer to it, and a timer that outlives the tool window pins the plugin classloader on
+     * a dynamic unload.
+     */
+    parentDisposable: Disposable
+) : JPanel(BorderLayout()) {
 
     private val logger = MockkHttpLogger.getInstance(project)
     private val settingsStore = SettingsStore.getInstance(project)
@@ -281,6 +290,22 @@ class SettingsPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         contentPanel.add(cachePanel)
         contentPanel.add(Box.createVerticalStrut(15))
+
+        // ========== AI AGENT SECTION ==========
+        // What an agent may do is configuration, so it lives here; what an agent actually did is
+        // traffic, so it is listed in the Inspector. The two used to share a tab of their own.
+        //
+        // Wrapped: unlike every other section, this one talks to the control plane and the file
+        // system at construction time. The agent channel is optional and a user who never asked for
+        // it must still get their paths, port and cache settings, so a failure costs one section —
+        // never the whole tab (which MockkHttpToolWindow rethrows and would take the tool window
+        // down with it).
+        try {
+            contentPanel.add(AgentSettingsSection(project, parentDisposable))
+            contentPanel.add(Box.createVerticalStrut(15))
+        } catch (e: Exception) {
+            logger.error("Failed to create the AI agent settings section", e)
+        }
 
         // ========== HELP SECTION ==========
         val helpPanel = JPanel(BorderLayout()).apply {
