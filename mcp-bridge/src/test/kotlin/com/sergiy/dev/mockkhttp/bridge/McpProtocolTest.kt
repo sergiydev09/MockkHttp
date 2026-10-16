@@ -100,6 +100,30 @@ class McpProtocolTest {
     }
 
     @Test
+    fun `2026-07-28 list results carry the cache hints a modern client requires`() {
+        // Without these two fields Claude Code (SDK 2026-07-28) rejects tools/list outright —
+        // "Invalid result for tools/list: expected number at ttlMs" — and the server shows as
+        // connected with zero tools. The client checks: ttlMs an integer >= 0, cacheScope one of
+        // "public" | "private". server/discover gets them too: optional there, but we advertise
+        // the revision first.
+        val modernMeta = "\"_meta\":{\"$META_PROTOCOL_VERSION\":\"$PROTOCOL_2026_07_28\"}"
+        val listed = resultOf("{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/list\",\"params\":{$modernMeta}}")
+        val discovered = resultOf("{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"server/discover\",\"params\":{$modernMeta}}")
+        // A client that sends no _meta at all still gets the same shape: there is no era switch.
+        val legacyListed = resultOf("{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/list\"}")
+
+        for ((what, result) in listOf("tools/list" to listed, "server/discover" to discovered, "legacy tools/list" to legacyListed)) {
+            val ttl = result.get("ttlMs")
+            assertTrue(ttl != null && ttl.isJsonPrimitive && ttl.asJsonPrimitive.isNumber, "$what: ttlMs must be a number, got $ttl")
+            assertEquals(ttl.asLong.toDouble(), ttl.asDouble, "$what: ttlMs must be an integer, got $ttl")
+            assertTrue(ttl.asLong >= 0, "$what: ttlMs must be >= 0, got $ttl")
+            assertTrue(result.get("cacheScope")?.asString in setOf("public", "private"), "$what: cacheScope was ${result.get("cacheScope")}")
+            assertEquals("complete", result.get("resultType").asString, what)
+        }
+        assertEquals(TOOL_COUNT, listed.getAsJsonArray("tools").size())
+    }
+
+    @Test
     fun `a protocol revision this bridge has never heard of still gets the tools`() {
         // Answering -32022 here would take the whole server down for a revision whose tool surface,
         // on every past evidence, is identical.

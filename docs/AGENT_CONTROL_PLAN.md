@@ -849,7 +849,9 @@ mcp-bridge/build.gradle.kts                 // Kotlin JVM 21, only dep Gson, sha
 mcp-bridge/src/main/kotlin/com/sergiy/dev/mockkhttp/bridge/Main.kt        // stdio loop; never throws on startup
 mcp-bridge/src/main/kotlin/.../McpProtocol.kt   // dual-era: legacy `initialize` + modern `server/discover`,
                                                 // _meta protocolVersion, MCP-Protocol-Version / Mcp-Method /
-                                                // Mcp-Name validation (-32020), -32022, resultType:"complete"
+                                                // Mcp-Name validation (-32020), -32022, resultType:"complete",
+                                                // ttlMs + cacheScope on tools/list (REQUIRED in 2026-07-28:
+                                                // without them the client drops every tool) and server/discover
 mcp-bridge/src/main/kotlin/.../Discovery.kt     // instance-file glob, pid liveness, longest-prefix cwd match,
                                                 // MOCKKHTTP_PROJECT / MOCKKHTTP_BASE_URL+TOKEN overrides
 mcp-bridge/src/main/kotlin/.../RestClient.kt    // java.net.http.HttpClient; bearer + X-MockkHttp-Client;

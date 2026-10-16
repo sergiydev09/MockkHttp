@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.sergiy.dev"
-version = "1.8.0"
+version = "1.8.1"
 
 repositories {
     mavenCentral()
@@ -69,6 +69,18 @@ intellijPlatform {
         }
 
         changeNotes = """
+            <h3>1.8.1 — The MCP server works with Claude Code again</h3>
+            <ul>
+                <li><strong>🤖 Fixed: "connected · tools fetch failed" in Claude Code.</strong> Clients that speak MCP
+                    2026-07-28 (Claude Code 2.1.301, for one) require two cache fields on <code>tools/list</code>,
+                    <code>ttlMs</code> and <code>cacheScope</code>. The bundled bridge did not send them, so the client
+                    rejected the whole list and every <code>mockkhttp_*</code> tool was missing from the session. The
+                    bridge now sends both, on <code>server/discover</code> too. Older MCP clients are unaffected.</li>
+                <li>Plugin only: the Gradle plugin, the Android library and the <code>mockk_http</code> Flutter package
+                    stay at 1.8.0 — nothing in your app needs to change. Restart Android Studio after updating, then
+                    reconnect the server with <code>/mcp</code>.</li>
+            </ul>
+
             <h3>1.8.0 — Drive MockkHttp from an AI agent (Claude Code / MCP)</h3>
             <p>Everything the tool window can do is now available to an AI coding agent, through a local control plane
                 and a bundled MCP bridge. The agent sees the same flows and rules you do, and every call it makes is

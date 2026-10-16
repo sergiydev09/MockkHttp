@@ -39,6 +39,12 @@ val WIRE: Gson = GsonBuilder().disableHtmlEscaping().serializeNulls().create()
 //
 // Serving both is cheap: answer `initialize` AND `server/discover`, and put `resultType:"complete"`
 // on every result — older clients treat unknown result fields as pass-through data.
+//
+// 2026-07-28 also makes list results CACHEABLE: `tools/list` (and `server/discover`) carry
+// `ttlMs` (integer ≥ 0) and `cacheScope` ("public" | "private"). They are REQUIRED on `tools/list`
+// — a modern client rejects the whole result without them ("Invalid result for tools/list:
+// expected number at ttlMs"), the server shows as connected with zero tools, and every
+// `mockkhttp_*` tool vanishes from the session.
 
 const val PROTOCOL_2026_07_28: String = "2026-07-28"
 const val PROTOCOL_2025_11_25: String = "2025-11-25"
@@ -60,6 +66,24 @@ const val META_CLIENT_INFO: String = "io.modelcontextprotocol/clientInfo"
 
 /** `_meta` key carrying server identity in a `server/discover` result. */
 const val META_SERVER_INFO: String = "io.modelcontextprotocol/serverInfo"
+
+/**
+ * How long a 2026-07-28 client may reuse our `tools/list` / `server/discover` answer.
+ *
+ * The tool set is baked into the jar, so it cannot change while the process lives — but the
+ * client's cache is keyed on `serverInfo.name@version` and may outlive the process (Claude Code
+ * persists it, capped at 24 h). A rebuild at the same version, or a jar that reports "dev", would
+ * then be served yesterday's descriptions for a day. Five minutes keeps that window short, and a
+ * refetch costs nothing: the list is answered locally, without touching the IDE.
+ */
+const val LIST_CACHE_TTL_MS: Long = 5 * 60 * 1000L
+
+/**
+ * "private" scopes the cached list to this client's own partition. "public" would let it be
+ * shared across partitions, which buys nothing for a stdio server launched per session and is the
+ * only one of the two values that could ever be wrong.
+ */
+const val LIST_CACHE_SCOPE: String = "private"
 
 // JSON-RPC 2.0 error codes.
 const val PARSE_ERROR: Int = -32700
@@ -196,6 +220,9 @@ class McpProtocol(private val tools: Tools = Tools()) {
         meta.add(META_SERVER_INFO, serverInfo())
         result.add("_meta", meta)
         result.addProperty("instructions", INSTRUCTIONS)
+        // Optional here (a modern client defaults them to 0 / "private"), but this revision is the
+        // one we advertise first, so say it rather than rely on the client's fallback.
+        addCacheHints(result)
         return result
     }
 
@@ -218,8 +245,15 @@ class McpProtocol(private val tools: Tools = Tools()) {
 
     private fun toolsListResult(): JsonObject {
         val result = JsonObject()
+        // Mandatory from 2026-07-28; see LIST_CACHE_TTL_MS. Earlier revisions ignore both fields.
+        addCacheHints(result)
         result.add("tools", tools.definitions())
         return result
+    }
+
+    private fun addCacheHints(result: JsonObject) {
+        result.addProperty("ttlMs", LIST_CACHE_TTL_MS)
+        result.addProperty("cacheScope", LIST_CACHE_SCOPE)
     }
 
     private fun callTool(id: JsonElement, params: JsonObject): JsonElement {
